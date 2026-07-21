@@ -1,0 +1,30 @@
+# Freebuff desktop data
+.freebuff/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+
+# Environment secrets
+.env
+
+# Temporary Telegram snapshot
+drowsy_alert.jpg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model files (large binary — download separately or use Git LFS)
+# best.pt
