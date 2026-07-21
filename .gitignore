@@ -1,6 +1,3 @@
-# Freebuff desktop data
-.freebuff/
-
 # Python
 __pycache__/
 *.py[cod]
