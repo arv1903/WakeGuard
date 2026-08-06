@@ -117,6 +117,10 @@ BarHeight = 11
 PoseSmoothAlpha = 0.35
 AttentionSmoothAlpha = 0.85
 
+# ── HUD Rendering ──────────────────────────────────
+PilHud = True                 # use the anti-aliased PIL HUD when available
+NightMode = False             # dim the overlay for night driving
+
 # ── Alert hysteresis ───────────────────────────────
 ClearGraceSeconds = 2.0       # alert stays on this long after condition clears
 
