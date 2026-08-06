@@ -41,6 +41,13 @@ FaceLostCleanTime = 3.0     # slower trigger if last state was clean/alert
 # ── Performance ───────────────────────────────────
 HeadPoseEveryN = 2                # run MediaPipe every N frames
 
+# ── Performance / Pipeline ─────────────────────────
+CaptureWidth = 640            # camera capture width (display upscales)
+CaptureHeight = 480           # camera capture height
+YoloEveryN = 1                # run YOLO every N frames (1 = every frame)
+DisplayFps = 30               # display loop target FPS
+TelegramThreaded = True       # send photos on a background worker
+
 # ── YOLO Drowsiness Thresholds ────────────────────
 YoloDrowsyThreshold = 0.5         # fire YOLO-only alert above this
 YoloDrowsyWeak = 0.3              # lower bar when head-down is also true
