@@ -11,6 +11,7 @@ import time
 from collections import deque
 
 import cv2
+import numpy as np
 
 import yolo.telegram as telegram
 from yolo.alarm import SetAlarmMuted, UpdateAlarm
@@ -22,7 +23,7 @@ from yolo.config import (
     HeadPoseEveryN, YoloEveryN,
     YoloDrowsyThreshold, YoloDrowsyWeak, YoloDrowsyDuration,
     CaptureWidth, CaptureHeight,
-    DisplayFps, FrameWidth, FrameHeight,
+    DisplayFps, FrameWidth, FrameHeight, HudPanel,
     PoseSmoothAlpha, AttentionSmoothAlpha,
     AttentionFocusedMin, AttentionUnfocusedMin,
     TelegramCooldown, AlertMessages,
@@ -34,6 +35,7 @@ from yolo.config import (
     SessionLogPath, PilHud,
 )
 from yolo.calibration import CalibrationProfile, RunCalibration
+from yolo.envfile import LoadEnvFile
 from yolo.diagnostics import RunDiagnostics
 from yolo.session_log import SessionLogger
 from yolo.eyes import BlinkMonitor
@@ -53,7 +55,7 @@ _CONFIG_NAMES = (
     "HeadAwayTime CombinedDrowsyTime FaceLostDrowsyTime FaceLostCleanTime "
     "HeadPoseEveryN YoloEveryN YoloDrowsyThreshold YoloDrowsyWeak "
     "YoloDrowsyDuration CaptureWidth CaptureHeight DisplayFps FrameWidth "
-    "FrameHeight PoseSmoothAlpha AttentionSmoothAlpha AttentionFocusedMin "
+    "FrameHeight HudPanel PoseSmoothAlpha AttentionSmoothAlpha AttentionFocusedMin "
     "AttentionUnfocusedMin TelegramCooldown PerclosAlertThreshold "
     "PerclosAlertTime PerclosWindowSeconds DrowsyEmaAlpha EyesClosedYoloConf "
     "EarClosedThreshold EarMinBlinkSeconds MicrosleepSeconds ClearGraceSeconds "
@@ -85,6 +87,7 @@ def parse_args():
 
 
 def main():
+    LoadEnvFile()                     # .env → os.environ (before diagnostics)
     args = parse_args()
     LoadSettings(args.config)
     for _name in _CONFIG_NAMES:
@@ -185,7 +188,8 @@ def main():
 
     if not args.headless:
         cv2.namedWindow("Drowsiness Detection", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("Drowsiness Detection", FrameWidth, FrameHeight)
+        # Canvas is video + side panel, so make room for both.
+        cv2.resizeWindow("Drowsiness Detection", FrameWidth + HudPanel, FrameHeight)
 
     try:
         while True:
@@ -213,6 +217,10 @@ def main():
                     cv2.putText(annotated, "PAUSED", (40, 100),
                                 cv2.FONT_HERSHEY_SIMPLEX, 2.0,
                                 (255, 255, 0), 3)
+                    # Keep the same canvas width so the window doesn't jump.
+                    panel = np.zeros((annotated.shape[0], HudPanel, 3),
+                                     dtype=np.uint8)
+                    annotated = np.hstack([annotated, panel])
                     cv2.imshow("Drowsiness Detection", annotated)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
@@ -314,9 +322,9 @@ def main():
 
             if AlertMsg:
                 DrawAlertOverlay(annotated, Tick, AlertMsg)
+                # Full camera frame (not a crop) + alert type for the caption.
                 telegram.TriggerTelegramPhoto(
-                    result.drowsy_crop if result.drowsy_crop is not None else frame,
-                    Cooldown=TelegramCooldown)
+                    frame, Message=AlertMsg, Cooldown=TelegramCooldown)
 
             if not args.no_alarm:
                 UpdateAlarm(AlertMsg is not None)
@@ -348,6 +356,8 @@ def main():
             DisplayStats.tick()
             if not args.headless:
                 if PilHud:
+                    if hp["valid"] and hp["rvec"] is not None:
+                        DrawHeadAxes(annotated, hp["rvec"], hp["tvec"], hp["nose_pt"])
                     draw_ms = DisplayStats.mean("draw")
                     draw_fps = 1000.0 / draw_ms if draw_ms > 0 else 0.0
                     annotated = RenderHud(annotated, HudState(
@@ -366,7 +376,12 @@ def main():
                         face_lost_progress=face_lost_progress,
                     ))
                 else:
-                    DrawHud(annotated, not FaceFound and not hp["valid"],
+                    if hp["valid"] and hp["rvec"] is not None:
+                        DrawHeadAxes(annotated, hp["rvec"], hp["tvec"], hp["nose_pt"])
+                    # Legacy HUD: draw the panel on its own dark column and put
+                    # it beside the video, so the camera feed stays uncovered.
+                    panel = np.zeros((annotated.shape[0], HudPanel, 3), dtype=np.uint8)
+                    DrawHud(panel, not FaceFound and not hp["valid"],
                             AlertMsg is not None, result.max_drowsy, result.max_alert,
                             AttentionScore=SmoothedAttention,
                             HeadPose={"pitch": SmoothedPitch, "yaw": SmoothedYaw,
@@ -374,8 +389,7 @@ def main():
                             HeadDown=HeadDown, LookingAway=LookingAway,
                             HeadTilt=HeadTilt, IsFocused=IsFocused,
                             IsUnfocused=IsUnfocused, FaceLost=FaceLost)
-                if hp["valid"] and hp["rvec"] is not None:
-                    DrawHeadAxes(annotated, hp["rvec"], hp["tvec"], hp["nose_pt"])
+                    annotated = np.hstack([annotated, panel])
                 cv2.imshow("Drowsiness Detection", annotated)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
