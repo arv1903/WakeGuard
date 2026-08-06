@@ -41,3 +41,6 @@ captures/
 
 # User settings (the .example variant is committed)
 settings.json
+
+# Generated test videos (hand-authored labels are still tracked)
+testdata/*.mp4
