@@ -12,6 +12,26 @@ from .config import (
 )
 
 
+class AlertLatch:
+    """Once an alert fires it stays active until the condition has been
+    clean for `clear_seconds`. Prevents on/off flicker."""
+
+    def __init__(self, clear_seconds: float = 2.0):
+        self._clear_seconds = clear_seconds
+        self._clean_accum = 0.0
+        self._active = False
+
+    def update(self, fired: bool, dt: float) -> bool:
+        if fired:
+            self._active = True
+            self._clean_accum = 0.0
+        elif self._active:
+            self._clean_accum += dt
+            if self._clean_accum >= self._clear_seconds:
+                self._active = False
+        return self._active
+
+
 def ComputeAttentionScore(DrowsyConf, Pitch, Yaw):
     """Calculate a 0–100 attention score from eye-confidence and head angles.
 
