@@ -26,6 +26,8 @@ def BuildSummary(log_path: str) -> dict:
             elif ev["type"] == "alert":
                 alerts.append(ev["alert"])
                 alert_times.append(ts)
+            # "clear" events are intentionally ignored: only alert starts
+            # count toward alert_count and the timeline.
     return {
         "duration": (end_ts - start_ts) if start_ts is not None else 0.0,
         "attention_min": min(attentions) if attentions else None,
