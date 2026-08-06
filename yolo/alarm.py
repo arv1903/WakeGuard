@@ -19,10 +19,6 @@ def SetAlarmMuted(muted: bool) -> None:
         UpdateAlarm(False)
 
 
-def IsAlarmMuted() -> bool:
-    return _IsMuted
-
-
 def UpdateAlarm(Active):
     """Start or stop the looping alarm sound.
 
