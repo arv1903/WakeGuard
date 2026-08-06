@@ -1,69 +1,95 @@
 """
-Driver Drowsiness & Distraction Detection — Telegram Integration.
+Driver Drowsiness & Distraction Detection — Telegram Photo Dispatch.
 
-Sends a snapshot to a Telegram chat when an alert fires.
-Cooldown prevents message spam.
+Sends snapshots on a background worker thread so alerting never blocks
+the video pipeline. `TriggerTelegramPhoto` enqueues; the worker drains
+the queue respecting a cooldown.
 """
 
 import os
-import time
-import cv2
+import queue
 import threading
+import time
+
 import requests
 
+from .config import TelegramCooldown
 
-_LastTelegramMsg = 0.0
-_TelegramLock = threading.Lock()
+_Queue = queue.Queue(maxsize=4)
+_LastSent = 0.0
+_CooldownLock = threading.Lock()
+_Enabled = True
+_Stop = threading.Event()
+_Worker = None
 
 
-def _SendTelegramPhoto(ImgPath):
-    """POST a photo to the Telegram Bot API on a background thread.
+def SetTelegramEnabled(enabled: bool) -> None:
+    """Global on/off switch (e.g. --no-telegram)."""
+    global _Enabled
+    _Enabled = enabled
 
-    Args:
-        ImgPath (str): Path to the image file to send.
-    """
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
-    url = f"https://api.telegram.org/bot{token}/sendPhoto"
 
+def StartTelegramWorker() -> None:
+    global _Worker
+    if _Worker is None or not _Worker.is_alive():
+        _Stop.clear()
+        _Worker = threading.Thread(target=_Run, daemon=True, name="telegram")
+        _Worker.start()
+
+
+def StopTelegramWorker() -> None:
+    _Stop.set()
+    if _Worker is not None:
+        _Worker.join(timeout=2.0)
+
+
+def _SendPhoto(image) -> None:
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        return
+    ok, buf = cv2_encode(image)
+    if not ok:
+        return
     try:
-        with open(ImgPath, "rb") as f:
-            requests.post(
-                url,
-                data={"chat_id": chat_id},
-                files={"photo": f},
-                timeout=10,
-            )
-    except Exception as e:
-        print(f"[WARN] Failed to send Telegram photo: {e}")
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendPhoto",
+            data={"chat_id": chat_id},
+            files={"photo": ("drowsy.jpg", buf, "image/jpeg")},
+            timeout=10,
+        )
+    except requests.RequestException:
+        pass  # alerting must never crash the pipeline
 
 
-def TriggerTelegramPhoto(Frame, Cooldown=30.0):
-    """Save frame and dispatch to Telegram if cooldown has elapsed.
+def cv2_encode(image):
+    import cv2
+    ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    return ok, buf.tobytes() if ok else None
 
-    Args:
-        Frame (np.ndarray): The camera frame to snapshot.
-        Cooldown (float): Minimum seconds between sends.
-    """
-    global _LastTelegramMsg
 
-    now = time.time()
-    with _TelegramLock:
-        if now - _LastTelegramMsg < Cooldown:
-            return
+def _Run() -> None:
+    global _LastSent
+    while not _Stop.is_set():
+        try:
+            item = _Queue.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        with _CooldownLock:
+            now = time.time()
+            if now - _LastSent < TelegramCooldown:
+                continue                       # still in cooldown; drop item
+            _LastSent = now
+        _SendPhoto(item)
 
-        token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-        chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
 
-        if not token or not chat_id:
-            print("[WARN] Telegram credentials not set. Skipping photo.")
-            _LastTelegramMsg = now
-            return
-
-        _LastTelegramMsg = now
-        cv2.imwrite("drowsy_alert.jpg", Frame)
-        threading.Thread(
-            target=_SendTelegramPhoto,
-            args=("drowsy_alert.jpg",),
-            daemon=True,
-        ).start()
+def TriggerTelegramPhoto(image, Cooldown=TelegramCooldown) -> None:
+    """Enqueue a snapshot. Returns immediately; the worker sends it."""
+    global TelegramCooldown
+    TelegramCooldown = Cooldown
+    if not _Enabled:
+        return
+    try:
+        _Queue.put_nowait(image)
+    except queue.Full:
+        pass  # drop oldest alerts rather than block
