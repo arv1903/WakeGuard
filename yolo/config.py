@@ -7,6 +7,11 @@ All tunable thresholds, dimensions, and layout values live here.
 # ── Telegram ──────────────────────────────────────
 TelegramCooldown = 30.0
 
+# ── Calibration ────────────────────────────────────
+CalibrationDuration = 4.0      # seconds of neutral-pose sampling
+CalibrationCountdown = 3.0     # seconds of on-screen countdown before sampling
+ProfilePath = "profiles/driver.json"
+
 # ── MediaPipe Face Landmark Indices ────────────────
 # Nose tip, chin, left-eye outer, right-eye outer,
 # left-mouth corner, right-mouth corner
