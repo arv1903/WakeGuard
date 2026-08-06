@@ -28,3 +28,16 @@ Thumbs.db
 
 # Model files (large binary — download separately or use Git LFS)
 # best.pt
+
+# Agent progress scratch (SDD ledger + task briefs)
+.superpowers/
+
+# Calibration profiles
+profiles/
+
+# Session logs and captures
+logs/
+captures/
+
+# User settings (the .example variant is committed)
+settings.json
