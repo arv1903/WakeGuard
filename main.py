@@ -44,6 +44,21 @@ from yolo.drawing import DrawHud, DrawAlertOverlay, DrawModernBox, DrawHeadAxes
 from yolo.pipeline import CameraThread, InferenceThread
 from yolo.stats import PerfStats
 from yolo.config import LoadSettings
+import yolo.config as _config
+
+# Names bound by value from yolo.config above; refreshed after LoadSettings
+# so --config overrides actually reach the app logic.
+_CONFIG_NAMES = (
+    "HeadDownPitch HeadYawThreshold HeadRollThreshold HeadDownTime "
+    "HeadAwayTime CombinedDrowsyTime FaceLostDrowsyTime FaceLostCleanTime "
+    "HeadPoseEveryN YoloEveryN YoloDrowsyThreshold YoloDrowsyWeak "
+    "YoloDrowsyDuration CaptureWidth CaptureHeight DisplayFps FrameWidth "
+    "FrameHeight PoseSmoothAlpha AttentionSmoothAlpha AttentionFocusedMin "
+    "AttentionUnfocusedMin TelegramCooldown PerclosAlertThreshold "
+    "PerclosAlertTime PerclosWindowSeconds DrowsyEmaAlpha EyesClosedYoloConf "
+    "EarClosedThreshold EarMinBlinkSeconds MicrosleepSeconds ClearGraceSeconds "
+    "CalibrationDuration CalibrationCountdown ProfilePath SessionLogPath PilHud"
+).split()
 
 
 def parse_args():
@@ -72,6 +87,8 @@ def parse_args():
 def main():
     args = parse_args()
     LoadSettings(args.config)
+    for _name in _CONFIG_NAMES:
+        globals()[_name] = getattr(_config, _name)
     if args.summary:
         from yolo.summary import BuildSummary, PrintSummary
         PrintSummary(BuildSummary(args.summary))
