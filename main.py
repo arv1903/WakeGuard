@@ -8,6 +8,7 @@ alert/attention state machine on the display thread.
 import argparse
 import os
 import time
+from collections import deque
 
 import cv2
 
@@ -30,12 +31,13 @@ from yolo.config import (
     EarClosedThreshold, EarMinBlinkSeconds, MicrosleepSeconds,
     ClearGraceSeconds,
     CalibrationDuration, CalibrationCountdown, ProfilePath,
-    SessionLogPath,
+    SessionLogPath, PilHud,
 )
 from yolo.calibration import CalibrationProfile, RunCalibration
 from yolo.diagnostics import RunDiagnostics
 from yolo.session_log import SessionLogger
 from yolo.eyes import BlinkMonitor
+from yolo.hud import HudState, RenderHud
 from yolo.perclos import DrowsyEMA, PerclosTracker
 from yolo.detector import CreateDetectionModel, CreateFaceLandmarker
 from yolo.drawing import DrawHud, DrawAlertOverlay, DrawModernBox, DrawHeadAxes
@@ -149,6 +151,10 @@ def main():
     SmoothedPitch = SmoothedYaw = SmoothedRoll = 0.0
     SmoothedAttention = 100.0
     DisplayStats = PerfStats()
+    attention_history = deque(maxlen=60)
+    last_seen = None
+    draw_fps = 0.0
+    face_lost_progress = 0.0
 
     FramePeriod = 1.0 / DisplayFps
     logger = SessionLogger(args.log)
@@ -230,8 +236,14 @@ def main():
                 FaceLostAccumulated += DeltaTime
                 if WasHeadDownBeforeLoss or WasDrowsyBeforeLoss:
                     FaceLostAlert = FaceLostAccumulated >= FaceLostDrowsyTime
+                    face_lost_progress = FaceLostAccumulated / FaceLostDrowsyTime
                 else:
                     FaceLostAlert = FaceLostAccumulated >= FaceLostCleanTime
+                    face_lost_progress = FaceLostAccumulated / FaceLostCleanTime
+            else:
+                face_lost_progress = 0.0
+            if FaceFound and not FaceLost:
+                last_seen = frame.copy()
 
             # ── State evaluation (same logic as original) ─────────
             HeadDown = hp["valid"] and (SmoothedPitch - profile.neutral_pitch) < -HeadDownPitch
@@ -313,18 +325,38 @@ def main():
                 logger.frame_sample(SmoothedAttention, perclos_now, ema_now,
                                     SmoothedPitch, SmoothedYaw, SmoothedRoll,
                                     hp["valid"], AlertMsg)
+                attention_history.append(SmoothedAttention)
                 last_log_time = Now
 
             DisplayStats.tick()
             if not args.headless:
-                DrawHud(annotated, not FaceFound and not hp["valid"],
-                        AlertMsg is not None, result.max_drowsy, result.max_alert,
-                        AttentionScore=SmoothedAttention,
-                        HeadPose={"pitch": SmoothedPitch, "yaw": SmoothedYaw,
-                                  "roll": SmoothedRoll, "valid": hp["valid"]},
-                        HeadDown=HeadDown, LookingAway=LookingAway,
-                        HeadTilt=HeadTilt, IsFocused=IsFocused,
-                        IsUnfocused=IsUnfocused, FaceLost=FaceLost)
+                if PilHud:
+                    draw_ms = DisplayStats.mean("draw")
+                    draw_fps = 1000.0 / draw_ms if draw_ms > 0 else 0.0
+                    annotated = RenderHud(annotated, HudState(
+                        attention=SmoothedAttention,
+                        perclos=perclos_now,
+                        max_drowsy=result.max_drowsy,
+                        max_alert=result.max_alert,
+                        pitch=SmoothedPitch, yaw=SmoothedYaw, roll=SmoothedRoll,
+                        pose_valid=hp["valid"],
+                        head_down=HeadDown, looking_away=LookingAway,
+                        face_lost=FaceLost,
+                        alert=AlertMsg,
+                        fps=draw_fps,
+                        attention_history=attention_history,
+                        last_seen=last_seen,
+                        face_lost_progress=face_lost_progress,
+                    ))
+                else:
+                    DrawHud(annotated, not FaceFound and not hp["valid"],
+                            AlertMsg is not None, result.max_drowsy, result.max_alert,
+                            AttentionScore=SmoothedAttention,
+                            HeadPose={"pitch": SmoothedPitch, "yaw": SmoothedYaw,
+                                      "roll": SmoothedRoll, "valid": hp["valid"]},
+                            HeadDown=HeadDown, LookingAway=LookingAway,
+                            HeadTilt=HeadTilt, IsFocused=IsFocused,
+                            IsUnfocused=IsUnfocused, FaceLost=FaceLost)
                 if hp["valid"] and hp["rvec"] is not None:
                     DrawHeadAxes(annotated, hp["rvec"], hp["tvec"], hp["nose_pt"])
                 cv2.imshow("Drowsiness Detection", annotated)
