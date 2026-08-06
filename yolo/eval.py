@@ -38,11 +38,15 @@ def load_alerts(log_path):
 
 
 def evaluate(alerts, periods):
-    """Compare fired alert times to labeled periods within a tolerance.
+    """Episode-level evaluation of fired alerts vs labeled periods.
 
-    Returns dict with tp, fp, fn, precision, recall, f1.
+    A labeled period is a true positive if at least one alert falls within
+    its tolerance window (counted once, even if the episode re-fires);
+    alerts matching no period are false positives; periods with no alert
+    are false negatives. Returns dict with tp, fp, fn, precision, recall,
+    f1.
     """
-    tp = fp = 0
+    fp = 0
     matched = [False] * len(periods)
     for ts in alerts:
         hit = False
@@ -50,8 +54,9 @@ def evaluate(alerts, periods):
             if s - TOLERANCE_SECONDS <= ts <= e + TOLERANCE_SECONDS:
                 hit = True
                 matched[i] = True
-        tp += 1 if hit else 0
-        fp += 0 if hit else 1
+        if not hit:
+            fp += 1
+    tp = matched.count(True)
     fn = matched.count(False)
     precision = tp / (tp + fp) if (tp + fp) else 0.0
     recall = tp / (tp + fn) if (tp + fn) else 0.0
