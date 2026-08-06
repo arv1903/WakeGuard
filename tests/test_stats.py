@@ -14,7 +14,8 @@ def test_stats_records_stage_mean():
         time.sleep(0.001)
         s.tock("yolo")
     mean = s.mean("yolo")
-    assert 0.5 < mean < 5.0  # ~1 ms per sample
+    # sleep(0.001) can oversleep on loaded Windows, so only bound loosely.
+    assert 0.5 < mean < 100.0  # ~1 ms per sample
 
 
 def test_stats_snapshot_keys():
