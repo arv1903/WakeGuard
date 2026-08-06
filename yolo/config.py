@@ -7,6 +7,9 @@ All tunable thresholds, dimensions, and layout values live here.
 # ── Telegram ──────────────────────────────────────
 TelegramCooldown = 30.0
 
+# ── Session Logging ────────────────────────────────
+SessionLogPath = "logs/session.jsonl"
+
 # ── Calibration ────────────────────────────────────
 CalibrationDuration = 4.0      # seconds of neutral-pose sampling
 CalibrationCountdown = 3.0     # seconds of on-screen countdown before sampling
