@@ -147,12 +147,16 @@ class InferenceThread(threading.Thread):
                         driver_box = (x1, y1, x2, y2, cls_id, conf)
                     result.boxes.append((x1, y1, x2, y2, cls_id, conf))
                     result.face_found = True
+            crop = None
             if driver_box is not None:
                 x1, y1, x2, y2, cls_id, conf = driver_box
                 if cls_id == 0:
                     result.max_drowsy = conf
+                    crop = frame[y1:y2, x1:x2].copy()
                 else:
                     result.max_alert = conf
+            if crop is not None:
+                self._last_crop = crop
             self._last_boxes = result.boxes
             self._last_max_drowsy = result.max_drowsy
             self._last_max_alert = result.max_alert
@@ -167,13 +171,6 @@ class InferenceThread(threading.Thread):
         self._stats.tock("yolo")
 
         # Own copy so downstream drawing/Telegram can mutate it safely.
-        crop = None
-        for x1, y1, x2, y2, cls_id, conf in result.boxes:
-            if cls_id == 0 and conf == result.max_drowsy:
-                crop = frame[y1:y2, x1:x2].copy()
-                break
-        if crop is not None:
-            self._last_crop = crop
         result.drowsy_crop = self._last_crop
         return result
 

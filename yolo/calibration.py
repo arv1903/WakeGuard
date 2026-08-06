@@ -29,12 +29,11 @@ class CalibrationProfile:
             json.dump(asdict(self), f, indent=2)
 
 
-def RunCalibration(get_pose, duration: float = 4.0, on_prompt=None):
+def RunCalibration(get_pose, duration: float = 4.0):
     """Average valid pose samples over `duration` seconds.
 
     Args:
         get_pose: callable returning dict with keys pitch/yaw/roll/valid.
-        on_prompt: optional callback(str) for HUD/console messages.
 
     Returns:
         CalibrationProfile
