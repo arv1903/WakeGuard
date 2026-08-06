@@ -29,8 +29,10 @@ from yolo.config import (
     EarClosedThreshold, EarMinBlinkSeconds, MicrosleepSeconds,
     ClearGraceSeconds,
     CalibrationDuration, CalibrationCountdown, ProfilePath,
+    SessionLogPath,
 )
 from yolo.calibration import CalibrationProfile, RunCalibration
+from yolo.session_log import SessionLogger
 from yolo.eyes import BlinkMonitor
 from yolo.perclos import DrowsyEMA, PerclosTracker
 from yolo.detector import CreateDetectionModel, CreateFaceLandmarker
@@ -51,6 +53,8 @@ def parse_args():
                     help="Force re-running the neutral-pose calibration.")
     ap.add_argument("--skip-calibration", action="store_true",
                     help="Do not auto-calibrate when no profile exists.")
+    ap.add_argument("--log", default=SessionLogPath,
+                    help="Path for the JSONL session log.")
     return ap.parse_args()
 
 
@@ -122,6 +126,9 @@ def main():
     DisplayStats = PerfStats()
 
     FramePeriod = 1.0 / DisplayFps
+    logger = SessionLogger(args.log)
+    prev_alert = None
+    last_log_time = time.monotonic()
 
     if not args.headless:
         cv2.namedWindow("Drowsiness Detection", cv2.WINDOW_NORMAL)
@@ -201,7 +208,8 @@ def main():
                 CombinedDrowsyTime, Freeze=TimerFrozen)
 
             # ── PERCLOS + EMA (fuses YOLO confidence and EAR) ──────
-            eyes_closed = (ema_drowsy.update(result.max_drowsy) > EyesClosedYoloConf
+            ema_now = ema_drowsy.update(result.max_drowsy)
+            eyes_closed = (ema_now > EyesClosedYoloConf
                            or (result.ear is not None and result.ear < EarClosedThreshold))
             perclos_now = perclos.update(eyes_closed)
             PerclosAcc, PerclosFired = UpdateTimer(
@@ -250,6 +258,16 @@ def main():
                            and SmoothedAttention < AttentionFocusedMin and not HeadDown
                            and not LookingAway and hp["valid"])
 
+            # ── Session logging (alert transitions + 1 Hz samples) ──
+            if AlertMsg != prev_alert:
+                logger.alert_event(AlertMsg or "clear", 0.0)
+                prev_alert = AlertMsg
+            if Now - last_log_time >= 1.0:
+                logger.frame_sample(SmoothedAttention, perclos_now, ema_now,
+                                    SmoothedPitch, SmoothedYaw, SmoothedRoll,
+                                    hp["valid"], AlertMsg)
+                last_log_time = Now
+
             DisplayStats.tick()
             if not args.headless:
                 DrawHud(annotated, not FaceFound and not hp["valid"],
@@ -271,6 +289,7 @@ def main():
             DisplayStats.tock("draw")
 
     finally:
+        logger.close()
         inference.stop()
         camera.stop()
         telegram.StopTelegramWorker()
