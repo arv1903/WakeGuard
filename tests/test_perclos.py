@@ -31,6 +31,6 @@ def test_perclos_half_closed():
     assert p.update(True) == pytest.approx(0.5, abs=0.1)
 
 
-def test_perclos_empty_window_returns_zero():
+def test_perclos_single_closed_sample_is_one():
     p = PerclosTracker(window_seconds=10, sample_rate=2)
     assert p.update(True) == pytest.approx(1.0)

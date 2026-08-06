@@ -37,6 +37,7 @@ class BlinkMonitor:
         self._closed_threshold = closed_threshold
         self._min_blink_seconds = min_blink_seconds
         self._microsleep_seconds = microsleep_seconds
+        self._rate_window_seconds = rate_window_seconds
         self._closed = False
         self._closed_at = 0.0
         self._blink_ends = collections.deque()
@@ -50,9 +51,11 @@ class BlinkMonitor:
         elif not closed and self._closed:
             duration = now - self._closed_at
             self._closed = False
-            if self._min_blink_seconds <= duration:
+            # A microsleep is not also a blink.
+            if self._min_blink_seconds <= duration < self._microsleep_seconds:
                 self._blink_ends.append(now)
-                while self._blink_ends and self._blink_ends[0] < now - 60.0:
+                while (self._blink_ends
+                       and self._blink_ends[0] < now - self._rate_window_seconds):
                     self._blink_ends.popleft()
         closed_seconds = (now - self._closed_at) if self._closed else 0.0
         return {
