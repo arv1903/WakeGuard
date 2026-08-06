@@ -86,6 +86,13 @@ class InferenceThread(threading.Thread):
         self._stop = threading.Event()
         self._frame_counter = 0
         self._stats = PerfStats()
+        # Last YOLO detection, carried forward while throttled so the
+        # consumer never sees a false "face lost" on skipped frames.
+        self._last_boxes = []
+        self._last_max_drowsy = 0.0
+        self._last_max_alert = 0.0
+        self._last_face_found = False
+        self._last_crop = None
 
     def run(self) -> None:
         while not self._stop.is_set():
@@ -124,6 +131,17 @@ class InferenceThread(threading.Thread):
                         result.max_drowsy = max(result.max_drowsy, conf)
                     else:
                         result.max_alert = max(result.max_alert, conf)
+            self._last_boxes = result.boxes
+            self._last_max_drowsy = result.max_drowsy
+            self._last_max_alert = result.max_alert
+            self._last_face_found = result.face_found
+        else:
+            # Throttled frame: report the last known detection so face-lost
+            # logic does not flap on every skipped frame.
+            result.boxes = list(self._last_boxes)
+            result.max_drowsy = self._last_max_drowsy
+            result.max_alert = self._last_max_alert
+            result.face_found = self._last_face_found
         self._stats.tock("yolo")
 
         # Own copy so downstream drawing/Telegram can mutate it safely.
@@ -132,7 +150,9 @@ class InferenceThread(threading.Thread):
             if cls_id == 0 and conf == result.max_drowsy:
                 crop = frame[y1:y2, x1:x2].copy()
                 break
-        result.drowsy_crop = crop
+        if crop is not None:
+            self._last_crop = crop
+        result.drowsy_crop = self._last_crop
         return result
 
     def _publish(self, result: FrameResult) -> None:
