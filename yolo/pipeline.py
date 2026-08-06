@@ -10,6 +10,7 @@ import numpy as np
 from .latest import LatestValue
 from .stats import PerfStats
 from .head_pose import ComputeHeadPose
+from .eyes import ComputeEAR
 
 # MediaPipe video-mode requires a strictly increasing timestamp.
 _T0 = time.monotonic()
@@ -93,6 +94,7 @@ class InferenceThread(threading.Thread):
         self._last_max_alert = 0.0
         self._last_face_found = False
         self._last_crop = None
+        self._last_ear = None
 
     def run(self) -> None:
         while not self._stop.is_set():
@@ -114,6 +116,12 @@ class InferenceThread(threading.Thread):
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
             mp_result = self._landmarker.detect_for_video(mp_image, _mp_timestamp_ms())
             result.head_pose = ComputeHeadPose(mp_result, frame.shape)
+            if result.head_pose["valid"]:
+                mp_landmarks = (mp_result.face_landmarks[0].landmark
+                                if mp_result.face_landmarks else None)
+                self._last_ear = ComputeEAR(mp_landmarks, frame.shape[1], frame.shape[0])
+        # Persist EAR across throttled pose frames (stable for blink tracking).
+        result.ear = self._last_ear
         self._stats.tock("pose")
 
         # ── YOLO (every N frames) ───────────────────────
