@@ -31,6 +31,11 @@ class SessionLogger:
         self._write({"type": "alert", "alert": alert,
                      "fired_for": round(fired_for, 2)})
 
+    def clear_event(self, alert: str) -> None:
+        """Record that an alert ended. Distinct from alert starts so summary
+        and replay evaluation never count clears as alerts."""
+        self._write({"type": "clear", "alert": alert})
+
     def close(self) -> None:
         with self._lock:
             self._f.close()

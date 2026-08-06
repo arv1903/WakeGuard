@@ -39,6 +39,7 @@ from yolo.detector import CreateDetectionModel, CreateFaceLandmarker
 from yolo.drawing import DrawHud, DrawAlertOverlay, DrawModernBox, DrawHeadAxes
 from yolo.pipeline import CameraThread, InferenceThread
 from yolo.stats import PerfStats
+from yolo.config import LoadSettings
 
 
 def parse_args():
@@ -57,11 +58,14 @@ def parse_args():
                     help="Path for the JSONL session log.")
     ap.add_argument("--summary", metavar="LOG_PATH",
                     help="Print a trip summary from a session log and exit.")
+    ap.add_argument("--config", default=None,
+                    help="Path to a JSON settings file overriding config.py defaults.")
     return ap.parse_args()
 
 
 def main():
     args = parse_args()
+    LoadSettings(args.config)
     if args.summary:
         from yolo.summary import BuildSummary, PrintSummary
         PrintSummary(BuildSummary(args.summary))
@@ -267,7 +271,10 @@ def main():
 
             # ── Session logging (alert transitions + 1 Hz samples) ──
             if AlertMsg != prev_alert:
-                logger.alert_event(AlertMsg or "clear", 0.0)
+                if AlertMsg:
+                    logger.alert_event(AlertMsg, 0.0)
+                else:
+                    logger.clear_event(prev_alert or "")
                 prev_alert = AlertMsg
             if Now - last_log_time >= 1.0:
                 logger.frame_sample(SmoothedAttention, perclos_now, ema_now,
