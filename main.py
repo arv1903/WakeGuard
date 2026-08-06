@@ -32,6 +32,7 @@ from yolo.config import (
     SessionLogPath,
 )
 from yolo.calibration import CalibrationProfile, RunCalibration
+from yolo.diagnostics import RunDiagnostics
 from yolo.session_log import SessionLogger
 from yolo.eyes import BlinkMonitor
 from yolo.perclos import DrowsyEMA, PerclosTracker
@@ -60,6 +61,8 @@ def parse_args():
                     help="Print a trip summary from a session log and exit.")
     ap.add_argument("--config", default=None,
                     help="Path to a JSON settings file overriding config.py defaults.")
+    ap.add_argument("--record", metavar="PATH", default=None,
+                    help="Record the annotated video to PATH.")
     return ap.parse_args()
 
 
@@ -72,6 +75,16 @@ def main():
         return
 
     source = int(args.source) if args.source.isdigit() else args.source
+
+    # ── Diagnostics ────────────────────────────────────────────────
+    problems = RunDiagnostics(source, args.no_alarm, args.no_telegram)
+    for p in problems:
+        print(f"[!] {p}")
+    if problems and not args.headless:
+        try:
+            input("Press Enter to ignore and continue, or Ctrl+C to quit.")
+        except EOFError:
+            pass
 
     detection_model = CreateDetectionModel("best.pt")
     face_landmarker = CreateFaceLandmarker("face_landmarker.task")
@@ -140,6 +153,7 @@ def main():
     logger = SessionLogger(args.log)
     prev_alert = None
     last_log_time = time.monotonic()
+    recorder = None
 
     if not args.headless:
         cv2.namedWindow("Drowsiness Detection", cv2.WINDOW_NORMAL)
@@ -297,6 +311,13 @@ def main():
                 cv2.imshow("Drowsiness Detection", annotated)
                 if cv2.waitKey(1) == ord("q"):
                     break
+                if recorder is None and args.record:
+                    hh, ww = annotated.shape[:2]
+                    recorder = cv2.VideoWriter(
+                        args.record, cv2.VideoWriter_fourcc(*"mp4v"),
+                        DisplayFps, (ww, hh))
+                if recorder is not None:
+                    recorder.write(annotated)
                 elapsed = time.monotonic() - Now
                 if elapsed < FramePeriod:
                     time.sleep(FramePeriod - elapsed)
@@ -304,6 +325,8 @@ def main():
 
     finally:
         logger.close()
+        if recorder is not None:
+            recorder.release()
         inference.stop()
         camera.stop()
         telegram.StopTelegramWorker()
