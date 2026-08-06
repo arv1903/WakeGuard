@@ -132,17 +132,27 @@ class InferenceThread(threading.Thread):
         self._stats.tick()
         if n % self._yolo_every_n == 0:
             results = self._model(frame)
+            # Track the largest box as the driver's face; a passenger's
+            # eyes must never drive the alert state.
+            driver_box = None
+            largest_area = -1
             for r in results:
                 for box in r.boxes:
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     cls_id = int(box.cls[0])
                     conf = float(box.conf[0])
+                    area = (x2 - x1) * (y2 - y1)
+                    if area > largest_area:
+                        largest_area = area
+                        driver_box = (x1, y1, x2, y2, cls_id, conf)
                     result.boxes.append((x1, y1, x2, y2, cls_id, conf))
                     result.face_found = True
-                    if cls_id == 0:
-                        result.max_drowsy = max(result.max_drowsy, conf)
-                    else:
-                        result.max_alert = max(result.max_alert, conf)
+            if driver_box is not None:
+                x1, y1, x2, y2, cls_id, conf = driver_box
+                if cls_id == 0:
+                    result.max_drowsy = conf
+                else:
+                    result.max_alert = conf
             self._last_boxes = result.boxes
             self._last_max_drowsy = result.max_drowsy
             self._last_max_alert = result.max_alert
