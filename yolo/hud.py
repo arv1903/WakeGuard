@@ -130,7 +130,7 @@ def RenderHud(frame: np.ndarray, state: HudState) -> np.ndarray:
     y = 280
     for label, value in (("DROWSY", state.max_drowsy),
                          ("PERCLOS", state.perclos),
-                         ("FPS", state.fps / 100.0)):
+                         ("FPS", min(state.fps / 60.0, 1.0))):
         d.text((W - panel_w + 20, y), label, font=_font(14),
                fill=(150, 150, 160, 255))
         filled = int(value * (panel_w - 40))
