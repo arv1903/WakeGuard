@@ -15,8 +15,10 @@ def ComputeEAR(landmarks, frame_w: int, frame_h: int) -> float:
     """Average Eye Aspect Ratio across both eyes.
 
     Args:
-        landmarks: MediaPipe NormalizedLandmarkList (result.face_landmarks[0].
-            landmark). Returns 0.0 if fewer than 468 landmarks are present.
+        landmarks: First face's landmarks as a plain list (normalize both the
+            MediaPipe <1.0 ``NormalizedLandmarkList`` wrapper and the 1.0+
+            plain list via ``pipeline._normalized_landmarks``). Returns 0.0 if
+            fewer than 468 landmarks are present.
     """
     if landmarks is None or len(landmarks) < 468:
         return 0.0

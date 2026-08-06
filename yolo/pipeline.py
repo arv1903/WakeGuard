@@ -1,6 +1,7 @@
 """Threaded capture → inference → display pipeline."""
 import threading
 import time
+import traceback
 from dataclasses import dataclass, field
 
 import cv2
@@ -20,6 +21,27 @@ def _mp_timestamp_ms() -> int:
     return int((time.monotonic() - _T0) * 1000)
 
 
+def _normalized_landmarks(mp_result):
+    """Return the first face's landmarks as a plain list, across MediaPipe versions.
+
+    MediaPipe < 1.0 wraps landmarks in a ``NormalizedLandmarkList`` exposing a
+    ``.landmark`` attribute; 1.0+ returns a plain ``list[NormalizedLandmark]``
+    directly. This helper normalizes both shapes to a plain list so callers
+    (``ComputeEAR``) never see an ``AttributeError`` on the wrapper.
+
+    Args:
+        mp_result: A MediaPipe FaceLandmarkerResult (or None).
+
+    Returns:
+        list[NormalizedLandmark] | None: the first face's landmarks, or None
+        when no face was detected.
+    """
+    if mp_result is None or not getattr(mp_result, "face_landmarks", None):
+        return None
+    face = mp_result.face_landmarks[0]
+    return face.landmark if hasattr(face, "landmark") else face
+
+
 @dataclass
 class FrameResult:
     frame: np.ndarray
@@ -28,7 +50,6 @@ class FrameResult:
     max_drowsy: float = 0.0
     max_alert: float = 0.0
     face_found: bool = False
-    drowsy_crop: np.ndarray | None = None
     head_pose: dict = field(
         default_factory=lambda: {"pitch": 0.0, "yaw": 0.0, "roll": 0.0,
                                  "valid": False, "rvec": None, "tvec": None,
@@ -93,16 +114,26 @@ class InferenceThread(threading.Thread):
         self._last_max_drowsy = 0.0
         self._last_max_alert = 0.0
         self._last_face_found = False
-        self._last_crop = None
         self._last_ear = None
 
     def run(self) -> None:
+        failures = 0
         while not self._stop.is_set():
             frame = self._camera.latest_frame()
             if frame is None:
                 self._stop.wait(0.005)
                 continue
-            self._publish(self._infer(frame))
+            try:
+                self._publish(self._infer(frame))
+                failures = 0
+            except Exception:
+                # A single bad frame (e.g. a MediaPipe API mismatch) must never
+                # kill the feed silently — log it and keep consuming. Back off
+                # exponentially on persistent errors to bound CPU burn.
+                failures += 1
+                if failures <= 3:
+                    traceback.print_exc()
+                self._stop.wait(min(0.05 * (2 ** min(failures - 1, 5)), 1.0))
 
     def _infer(self, frame: np.ndarray) -> FrameResult:
         self._frame_counter += 1
@@ -117,8 +148,7 @@ class InferenceThread(threading.Thread):
             mp_result = self._landmarker.detect_for_video(mp_image, _mp_timestamp_ms())
             result.head_pose = ComputeHeadPose(mp_result, frame.shape)
             if result.head_pose["valid"]:
-                mp_landmarks = (mp_result.face_landmarks[0].landmark
-                                if mp_result.face_landmarks else None)
+                mp_landmarks = _normalized_landmarks(mp_result)
                 self._last_ear = ComputeEAR(mp_landmarks, frame.shape[1], frame.shape[0])
             else:
                 # No face: forget the stale EAR so blink/microsleep logic
@@ -147,16 +177,12 @@ class InferenceThread(threading.Thread):
                         driver_box = (x1, y1, x2, y2, cls_id, conf)
                     result.boxes.append((x1, y1, x2, y2, cls_id, conf))
                     result.face_found = True
-            crop = None
             if driver_box is not None:
                 x1, y1, x2, y2, cls_id, conf = driver_box
                 if cls_id == 0:
                     result.max_drowsy = conf
-                    crop = frame[y1:y2, x1:x2].copy()
                 else:
                     result.max_alert = conf
-            if crop is not None:
-                self._last_crop = crop
             self._last_boxes = result.boxes
             self._last_max_drowsy = result.max_drowsy
             self._last_max_alert = result.max_alert
@@ -169,9 +195,6 @@ class InferenceThread(threading.Thread):
             result.max_alert = self._last_max_alert
             result.face_found = self._last_face_found
         self._stats.tock("yolo")
-
-        # Own copy so downstream drawing/Telegram can mutate it safely.
-        result.drowsy_crop = self._last_crop
         return result
 
     def _publish(self, result: FrameResult) -> None:
