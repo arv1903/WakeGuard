@@ -1,12 +1,16 @@
 """Thread-safe JSONL session logging for post-trip review and training data."""
 
 import json
+import os
 import threading
 import time
 
 
 class SessionLogger:
     def __init__(self, path: str):
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
         self._lock = threading.Lock()
         self._f = open(path, "a", encoding="utf-8")
 
