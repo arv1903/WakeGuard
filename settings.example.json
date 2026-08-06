@@ -1,0 +1,11 @@
+{
+  "CaptureWidth": 640,
+  "CaptureHeight": 480,
+  "YoloEveryN": 1,
+  "HeadPoseEveryN": 2,
+  "YoloDrowsyThreshold": 0.5,
+  "YoloDrowsyWeak": 0.3,
+  "PerclosAlertThreshold": 0.5,
+  "EarClosedThreshold": 0.2,
+  "TelegramCooldown": 30.0
+}

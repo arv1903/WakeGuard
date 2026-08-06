@@ -4,6 +4,29 @@ Driver Drowsiness & Distraction Detection — Configuration Constants.
 All tunable thresholds, dimensions, and layout values live here.
 """
 
+import json
+import os
+import sys
+
+
+def LoadSettings(path=None):
+    """Override module-level constants from a validated JSON file.
+
+    Raises ValueError on unknown keys or non-numeric values for numeric keys.
+    """
+    if not path or not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    module = sys.modules[__name__]
+    for key, value in data.items():
+        if not hasattr(module, key):
+            raise ValueError(f"Unknown setting: {key}")
+        current = getattr(module, key)
+        if isinstance(current, (int, float)) and not isinstance(value, (int, float)):
+            raise ValueError(f"Setting {key} must be numeric, got {value!r}")
+        setattr(module, key, value)
+
 # ── Telegram ──────────────────────────────────────
 TelegramCooldown = 30.0
 

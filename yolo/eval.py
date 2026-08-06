@@ -30,6 +30,7 @@ def load_alerts(log_path):
             if ev["type"] == "frame" and t0 is None:
                 t0 = ev["ts"]
             elif ev["type"] == "alert":
+                # "clear" events are ignored: only alert starts are compared.
                 alerts.append(ev["ts"])
     if t0 is not None:
         alerts = [ts - t0 for ts in alerts]

@@ -10,8 +10,13 @@ Runs the pipeline headless, then compares fired alert times to labels.
 
 import argparse
 import json
+import os
 import subprocess
 import sys
+
+# Running `python scripts/replay_eval.py` puts only scripts/ on sys.path;
+# make the project root importable so `import yolo` works.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from yolo.eval import evaluate, load_alerts, parse_labels
 
