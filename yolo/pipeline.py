@@ -120,6 +120,10 @@ class InferenceThread(threading.Thread):
                 mp_landmarks = (mp_result.face_landmarks[0].landmark
                                 if mp_result.face_landmarks else None)
                 self._last_ear = ComputeEAR(mp_landmarks, frame.shape[1], frame.shape[0])
+            else:
+                # No face: forget the stale EAR so blink/microsleep logic
+                # never trusts a closure that is no longer observable.
+                self._last_ear = None
         # Persist EAR across throttled pose frames (stable for blink tracking).
         result.ear = self._last_ear
         self._stats.tock("pose")
