@@ -93,8 +93,18 @@ def _severity(alert):
 
 
 def RenderHud(frame: np.ndarray, state: HudState) -> np.ndarray:
-    """Composite the HUD over a BGR frame and return the annotated frame."""
+    """Return a canvas with the video on the left and the HUD panel on the right.
+
+    The HUD panel is drawn in its own column next to the camera feed (never
+    on top of it), so the video is always fully visible. The returned canvas
+    is ``frame`` width + ``HudPanel`` pixels wide.
+    """
     img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)).convert("RGBA")
+    h, w = img.size[1], img.size[0]
+    canvas = Image.new("RGBA", (w + config.HudPanel, h), (10, 10, 14, 255))
+    canvas.paste(img, (0, 0))
+    img = canvas
+
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
     d = ImageDraw.Draw(overlay)
 
