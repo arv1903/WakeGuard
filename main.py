@@ -20,7 +20,7 @@ from yolo.config import (
     HeadPoseEveryN, YoloEveryN,
     YoloDrowsyThreshold, YoloDrowsyWeak, YoloDrowsyDuration,
     CaptureWidth, CaptureHeight,
-    FrameWidth, FrameHeight,
+    DisplayFps, FrameWidth, FrameHeight,
     PoseSmoothAlpha, AttentionSmoothAlpha,
     AttentionFocusedMin, AttentionUnfocusedMin,
     TelegramCooldown, AlertMessages,
@@ -68,6 +68,8 @@ def main():
     SmoothedPitch = SmoothedYaw = SmoothedRoll = 0.0
     SmoothedAttention = 100.0
     DisplayStats = PerfStats()
+
+    FramePeriod = 1.0 / DisplayFps
 
     if not args.headless:
         cv2.namedWindow("Drowsiness Detection", cv2.WINDOW_NORMAL)
@@ -191,6 +193,9 @@ def main():
                 cv2.imshow("Drowsiness Detection", annotated)
                 if cv2.waitKey(1) == ord("q"):
                     break
+                elapsed = time.monotonic() - Now
+                if elapsed < FramePeriod:
+                    time.sleep(FramePeriod - elapsed)
             DisplayStats.tock("draw")
 
     finally:
