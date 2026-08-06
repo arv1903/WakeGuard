@@ -47,6 +47,12 @@ CaptureHeight = 480           # camera capture height
 YoloEveryN = 1                # run YOLO every N frames (1 = every frame)
 DisplayFps = 30               # display loop target FPS (GUI mode)
 
+# ── EAR / Blink / Microsleep ───────────────────────
+EarClosedThreshold = 0.20     # EAR below this = eyes closed
+EarMinBlinkSeconds = 0.10     # shorter closures are noise, not blinks
+MicrosleepSeconds = 1.5       # continuous closed beyond this = microsleep
+BlinkRateAlertPerMin = 8.0    # (reserved) abnormally slow blink rate
+
 # ── YOLO Drowsiness Thresholds ────────────────────
 YoloDrowsyThreshold = 0.5         # fire YOLO-only alert above this
 YoloDrowsyWeak = 0.3              # lower bar when head-down is also true
