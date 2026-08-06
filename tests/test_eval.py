@@ -25,6 +25,19 @@ def test_evaluate_within_tolerance_counts():
     assert res["tp"] == 1 and res["fp"] == 0
 
 
+def test_evaluate_multiple_alerts_one_period_count_once():
+    # Episode-level: 3 re-fires inside one period = 1 TP, not 3.
+    res = evaluate([1.0, 2.0, 3.0], [(0, 10)])
+    assert res["tp"] == 1 and res["fp"] == 0
+    assert res["precision"] == 1.0 and res["recall"] == 1.0
+
+
+def test_evaluate_mixed_hit_and_spurious():
+    res = evaluate([1.0, 2.0, 50.0], [(0, 10)])
+    assert res["tp"] == 1 and res["fp"] == 1
+    assert res["precision"] == 0.5 and res["recall"] == 1.0
+
+
 def test_load_alerts_relative_to_first_frame(tmp_path):
     path = tmp_path / "s.jsonl"
     with open(path, "w", encoding="utf-8") as f:

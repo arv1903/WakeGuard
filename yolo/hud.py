@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from .config import HudPanel, NightMode
+from . import config  # attribute access so --config overrides are honored
 
 
 @dataclass
@@ -99,7 +99,7 @@ def RenderHud(frame: np.ndarray, state: HudState) -> np.ndarray:
     d = ImageDraw.Draw(overlay)
 
     W, H = img.size
-    panel_w = HudPanel
+    panel_w = config.HudPanel
 
     # Static panel + attention gauge
     overlay.alpha_composite(_static_panel(W, H, panel_w))
@@ -168,7 +168,7 @@ def RenderHud(frame: np.ndarray, state: HudState) -> np.ndarray:
                   start=90, end=90 - 360 * prog, fill=(244, 67, 54, 255),
                   width=5)
 
-    if NightMode:
+    if config.NightMode:
         overlay = Image.eval(overlay, lambda v: v // 2)
 
     img = Image.alpha_composite(img, overlay)
