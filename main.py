@@ -6,12 +6,13 @@ alert/attention state machine on the display thread.
 """
 
 import argparse
+import os
 import time
 
 import cv2
 
 import yolo.telegram as telegram
-from yolo.alarm import UpdateAlarm
+from yolo.alarm import SetAlarmMuted, UpdateAlarm
 from yolo.attention import AlertLatch, ComputeAttentionScore, UpdateTimer
 from yolo.config import (
     HeadDownPitch, HeadYawThreshold, HeadRollThreshold,
@@ -154,6 +155,10 @@ def main():
     prev_alert = None
     last_log_time = time.monotonic()
     recorder = None
+    recording_enabled = args.record is not None
+    recorder_path = args.record
+    alarm_muted = False
+    paused = False
 
     if not args.headless:
         cv2.namedWindow("Drowsiness Detection", cv2.WINDOW_NORMAL)
@@ -178,6 +183,20 @@ def main():
                 scale = FrameWidth / w
                 frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
             annotated = frame.copy()
+
+            # ── Paused: freeze evaluation, show the frame only ─────
+            if paused:
+                if not args.headless:
+                    cv2.putText(annotated, "PAUSED", (40, 100),
+                                cv2.FONT_HERSHEY_SIMPLEX, 2.0,
+                                (255, 255, 0), 3)
+                    cv2.imshow("Drowsiness Detection", annotated)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord("q"):
+                        break
+                    elif key == ord("p"):
+                        paused = False
+                continue
 
             hp = result.head_pose
             if hp["valid"]:
@@ -309,15 +328,39 @@ def main():
                 if hp["valid"] and hp["rvec"] is not None:
                     DrawHeadAxes(annotated, hp["rvec"], hp["tvec"], hp["nose_pt"])
                 cv2.imshow("Drowsiness Detection", annotated)
-                if cv2.waitKey(1) == ord("q"):
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q"):
                     break
-                if recorder is None and args.record:
+                elif key == ord("s"):
+                    os.makedirs("captures", exist_ok=True)
+                    cv2.imwrite(f"captures/snap_{int(time.time())}.jpg", annotated)
+                    print("Snapshot saved to captures/")
+                elif key == ord("m"):
+                    alarm_muted = not alarm_muted
+                    SetAlarmMuted(alarm_muted)
+                    print("Alarm muted" if alarm_muted else "Alarm unmuted")
+                elif key == ord("p"):
+                    paused = True
+                    print("PAUSED — press P to resume")
+                elif key == ord("r") and args.record is None:
+                    recording_enabled = not recording_enabled
+                    if recording_enabled:
+                        os.makedirs("captures", exist_ok=True)
+                        recorder_path = f"captures/rec_{int(time.time())}.mp4"
+                        recorder = None
+                        print(f"Recording to {recorder_path}")
+                    else:
+                        print("Recording stopped")
+                if recording_enabled and recorder is None:
                     hh, ww = annotated.shape[:2]
                     recorder = cv2.VideoWriter(
-                        args.record, cv2.VideoWriter_fourcc(*"mp4v"),
+                        recorder_path, cv2.VideoWriter_fourcc(*"mp4v"),
                         DisplayFps, (ww, hh))
                 if recorder is not None:
                     recorder.write(annotated)
+                    if not recording_enabled:
+                        recorder.release()
+                        recorder = None
                 elapsed = time.monotonic() - Now
                 if elapsed < FramePeriod:
                     time.sleep(FramePeriod - elapsed)

@@ -8,6 +8,19 @@ Adapt for Linux/macOS by replacing with playsound / pygame.
 import ctypes
 
 _IsPlayingAlarm = False
+_IsMuted = False
+
+
+def SetAlarmMuted(muted: bool) -> None:
+    """Mute/unmute the alarm. Muting stops any active playback."""
+    global _IsMuted
+    _IsMuted = muted
+    if muted:
+        UpdateAlarm(False)
+
+
+def IsAlarmMuted() -> bool:
+    return _IsMuted
 
 
 def UpdateAlarm(Active):
@@ -17,6 +30,9 @@ def UpdateAlarm(Active):
         Active (bool): True to start, False to stop.
     """
     global _IsPlayingAlarm
+
+    if _IsMuted:
+        return
 
     if Active and not _IsPlayingAlarm:
         ctypes.windll.winmm.mciSendStringW("close alarm", None, 0, None)
