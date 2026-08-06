@@ -28,7 +28,7 @@ from yolo.config import (
     DrowsyEmaAlpha, EyesClosedYoloConf,
     EarClosedThreshold, EarMinBlinkSeconds, MicrosleepSeconds,
     ClearGraceSeconds,
-    CalibrationDuration, ProfilePath,
+    CalibrationDuration, CalibrationCountdown, ProfilePath,
 )
 from yolo.calibration import CalibrationProfile, RunCalibration
 from yolo.eyes import BlinkMonitor
@@ -76,6 +76,9 @@ def main():
             if profile is None:
                 print("[warn] No calibration profile and headless/skip-calibration: "
                       "using neutral defaults.")
+            elif args.calibrate:
+                print("[warn] --calibrate ignored in headless mode; keeping "
+                      "existing profile.")
             profile = profile or CalibrationProfile()
         else:
             def current_pose():
@@ -85,7 +88,9 @@ def main():
                 return {"pitch": r.head_pose["pitch"],
                         "yaw": r.head_pose["yaw"],
                         "roll": r.head_pose["roll"], "valid": True}
-            print("LOOK STRAIGHT AHEAD — calibrating neutral head pose...")
+            print(f"LOOK STRAIGHT AHEAD — calibrating neutral head pose in "
+                  f"{int(CalibrationCountdown)}s...")
+            time.sleep(CalibrationCountdown)
             try:
                 profile = RunCalibration(current_pose, duration=CalibrationDuration)
                 profile.save(ProfilePath)
@@ -93,8 +98,8 @@ def main():
                       f"(pitch={profile.neutral_pitch:.1f}, "
                       f"yaw={profile.neutral_yaw:.1f}, roll={profile.neutral_roll:.1f})")
             except RuntimeError as exc:
-                print(f"[warn] {exc} Using neutral defaults.")
-                profile = CalibrationProfile()
+                print(f"[warn] {exc} Keeping existing profile (if any).")
+                profile = profile or CalibrationProfile()
 
     # ── State (unchanged logic from the original loop) ────────────
     LastTime = time.monotonic()
