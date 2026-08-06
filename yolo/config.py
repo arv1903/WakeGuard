@@ -86,10 +86,15 @@ BarHeight = 11
 PoseSmoothAlpha = 0.35
 AttentionSmoothAlpha = 0.85
 
+# ── Alert hysteresis ───────────────────────────────
+ClearGraceSeconds = 2.0       # alert stays on this long after condition clears
+
 # ── Alert Messages ────────────────────────────────
 AlertMessages = {
     "combined": "HEAD NODDING - DROWSY!",
     "face_lost": "FACE LOST — POSSIBLE MICROSLEEP!",
     "head_away": "DISTRACTED - WATCH ROAD!",
     "yolo": "DROWSINESS DETECTED!",
+    "perclos": "FATIGUE DETECTED - SUSTAINED EYE CLOSURE!",
+    "microsleep": "MICROSLEEP - EYES CLOSED! WAKE UP!",
 }

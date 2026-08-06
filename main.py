@@ -12,7 +12,7 @@ import cv2
 
 import yolo.telegram as telegram
 from yolo.alarm import UpdateAlarm
-from yolo.attention import ComputeAttentionScore, UpdateTimer
+from yolo.attention import AlertLatch, ComputeAttentionScore, UpdateTimer
 from yolo.config import (
     HeadDownPitch, HeadYawThreshold, HeadRollThreshold,
     HeadDownTime, HeadAwayTime, CombinedDrowsyTime,
@@ -24,7 +24,13 @@ from yolo.config import (
     PoseSmoothAlpha, AttentionSmoothAlpha,
     AttentionFocusedMin, AttentionUnfocusedMin,
     TelegramCooldown, AlertMessages,
+    PerclosAlertThreshold, PerclosAlertTime,
+    DrowsyEmaAlpha, EyesClosedYoloConf,
+    EarClosedThreshold, EarMinBlinkSeconds, MicrosleepSeconds,
+    ClearGraceSeconds,
 )
+from yolo.eyes import BlinkMonitor
+from yolo.perclos import DrowsyEMA, PerclosTracker
 from yolo.detector import CreateDetectionModel, CreateFaceLandmarker
 from yolo.drawing import DrawHud, DrawAlertOverlay, DrawModernBox, DrawHeadAxes
 from yolo.pipeline import CameraThread, InferenceThread
@@ -61,6 +67,14 @@ def main():
     LastTime = time.monotonic()
     Tick = 0
     YoloDrowsyAcc = HeadDownAcc = HeadAwayAcc = CombinedAcc = 0.0
+    PerclosAcc = 0.0
+    ema_drowsy = DrowsyEMA(alpha=DrowsyEmaAlpha)
+    perclos = PerclosTracker(window_seconds=60.0)
+    blinks = BlinkMonitor(closed_threshold=EarClosedThreshold,
+                          min_blink_seconds=EarMinBlinkSeconds,
+                          microsleep_seconds=MicrosleepSeconds)
+    latches = {name: AlertLatch(clear_seconds=ClearGraceSeconds)
+               for name in ("perclos", "microsleep")}
     FaceLost = False
     FaceLostAccumulated = 0.0
     WasHeadDownBeforeLoss = WasDrowsyBeforeLoss = False
@@ -148,8 +162,25 @@ def main():
                 HeadDown and YoloWeak, CombinedAcc, DeltaTime,
                 CombinedDrowsyTime, Freeze=TimerFrozen)
 
-            if CombinedAlert or HeadDownAlert:
+            # ── PERCLOS + EMA (fuses YOLO confidence and EAR) ──────
+            eyes_closed = (ema_drowsy.update(result.max_drowsy) > EyesClosedYoloConf
+                           or (result.ear is not None and result.ear < EarClosedThreshold))
+            perclos_now = perclos.update(eyes_closed)
+            PerclosAcc, PerclosFired = UpdateTimer(
+                perclos_now > PerclosAlertThreshold, PerclosAcc, DeltaTime,
+                PerclosAlertTime, Freeze=TimerFrozen)
+            PerclosAlert = latches["perclos"].update(PerclosFired, DeltaTime)
+
+            # ── Microsleep (EAR-based) — most dangerous ────────────
+            blink_state = blinks.update(result.ear if result.ear is not None else 1.0, Now)
+            MicrosleepAlert = latches["microsleep"].update(blink_state["microsleep"], DeltaTime)
+
+            if MicrosleepAlert:
+                AlertMsg = AlertMessages["microsleep"]
+            elif CombinedAlert or HeadDownAlert:
                 AlertMsg = AlertMessages["combined"]
+            elif PerclosAlert:
+                AlertMsg = AlertMessages["perclos"]
             elif FaceLostAlert:
                 AlertMsg = AlertMessages["face_lost"]
             elif HeadAwayAlert:
