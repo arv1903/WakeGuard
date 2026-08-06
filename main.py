@@ -55,11 +55,18 @@ def parse_args():
                     help="Do not auto-calibrate when no profile exists.")
     ap.add_argument("--log", default=SessionLogPath,
                     help="Path for the JSONL session log.")
+    ap.add_argument("--summary", metavar="LOG_PATH",
+                    help="Print a trip summary from a session log and exit.")
     return ap.parse_args()
 
 
 def main():
     args = parse_args()
+    if args.summary:
+        from yolo.summary import BuildSummary, PrintSummary
+        PrintSummary(BuildSummary(args.summary))
+        return
+
     source = int(args.source) if args.source.isdigit() else args.source
 
     detection_model = CreateDetectionModel("best.pt")
