@@ -52,6 +52,13 @@ YoloDrowsyThreshold = 0.5         # fire YOLO-only alert above this
 YoloDrowsyWeak = 0.3              # lower bar when head-down is also true
 YoloDrowsyDuration = 4.0
 
+# ── PERCLOS / Fatigue ─────────────────────────────
+PerclosWindowSeconds = 60.0   # rolling window
+PerclosAlertThreshold = 0.5   # % of window with eyes closed → alert
+PerclosAlertTime = 5.0        # seconds of sustained high PERCLOS to fire
+DrowsyEmaAlpha = 0.9          # EMA smoothing of YOLO drowsy confidence
+EyesClosedYoloConf = 0.3      # YOLO drowsy conf treated as "eyes closed"
+
 # ── Focus / Attention Zones ───────────────────────
 HeadPitchFocusedMin = -10.0
 HeadPitchFocusedMax = 15.0
