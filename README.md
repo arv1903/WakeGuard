@@ -25,6 +25,7 @@ Real-time driver monitoring system that fuses a **YOLO eye-state classifier** wi
 | **Startup diagnostics + CLI** | Model/camera/Telegram checks and `--headless`, `--record`, `--calibrate`, `--skip-calibration` flags |
 | **Anti-aliased PIL HUD** | Gauge, sparkline, severity-pulsing alert banner, face-lost countdown ring — rendered **beside** the video, never over it |
 | **Performance throttling** | YOLO and MediaPipe run on configurable frame strides; results persist across throttled frames to prevent false face-loss flapping |
+| **Flutter integration API** | Optional local HTTP/SSE status service exposes versioned monitoring snapshots for a Flutter desktop dashboard or mobile companion |
 
 ### Alert Channels & Priority
 
@@ -100,6 +101,9 @@ Inter-thread handoff uses a **drop-old `LatestValue` slot** (see `yolo/latest.py
     ├── envfile.py           # Dependency-free .env loader
     ├── config.py            # All tunable constants + LoadSettings
     ├── latest.py            # Drop-old thread handoff slot
+    ├── monitoring.py        # Versioned state snapshots for clients
+    ├── api.py               # Local HTTP/SSE/MJPEG API boundary
+    ├── pairing.py           # One-time pairing codes and client tokens
     └── stats.py             # Rolling per-stage performance timings
 ```
 
@@ -168,6 +172,71 @@ On first run the application **auto-calibrates** the neutral head pose (hold sti
 | `M` | Mute / unmute the alarm |
 | `P` | Pause evaluation (frame frozen, panel preserved) |
 | `R` | Toggle manual recording (when `--record` not set) |
+
+### Flutter Client API (optional)
+
+Start the monitoring API for a Flutter desktop or mobile client:
+
+```bash
+# Desktop-only: Flutter connects through localhost
+python main.py --api
+
+# Mobile companion on the same LAN: bind explicitly and require a token
+python main.py --api --api-host 0.0.0.0 --api-token CHANGE_ME
+```
+
+The initial API is dependency-free and exposes the latest state and camera frame at:
+
+```text
+GET /api/v1/health
+GET /api/v1/status
+GET /api/v1/events?after=<sequence>
+GET /api/v1/frame.jpg
+GET /api/v1/video.mjpg
+GET /api/v1/device
+GET /api/v1/sessions/current
+GET /api/v1/sessions/current/summary
+GET /api/v1/pairing
+POST /api/v1/pairing/exchange
+POST /api/v1/pairing/revoke
+```
+
+`/events` returns one Server-Sent Event containing the next monitoring snapshot;
+clients reconnect using the returned sequence number. Each API process also
+publishes a `server_id`, allowing clients to recover when the backend restarts
+and its sequence counter resets. The API accepts authenticated control requests
+for alarm mute/unmute, trip analytics start/stop, and calibration. It binds to
+`127.0.0.1` by default, and LAN binding is rejected unless `--api-token` is
+supplied. Use `/frame.jpg` for polling clients or `/video.mjpg` for a persistent
+latest-frame MJPEG stream; slow clients never block detection because old frames
+are dropped.
+
+Pairing is local-first: `GET /api/v1/pairing` reveals a short-lived,
+QR-compatible pairing URI only to a local desktop client. The companion sends
+that one-time code to `POST /api/v1/pairing/exchange` and receives a bearer token
+valid for 24 hours. Failed exchanges are bounded by a temporary lockout to slow
+code guessing. A companion can revoke its own token with authenticated
+`POST /api/v1/pairing/revoke`; the Flutter **Forget paired device** action clears
+local credentials and requests that revocation. The original `--api-token`
+remains valid for administration and cannot be revoked through this endpoint.
+
+### Flutter Dashboard
+
+The shared Flutter client lives in [`flutter_app/`](flutter_app/). It supports
+responsive desktop/mobile layouts, API reconnection, stale-state detection,
+status gauges, a persistent MJPEG camera feed, and authenticated controls.
+
+```bash
+cd flutter_app
+flutter pub get
+flutter run -d windows --dart-define=API_URL=http://127.0.0.1:8765
+```
+
+For a mobile companion, set `API_URL` to the backend machine's LAN address and
+use **Pair device** in connection settings. Reveal the code on the local desktop,
+then enter it on the phone; the app exchanges it for a short-lived token. Manual
+bearer-token entry remains available for administration. Flutter SDK validation
+must be run on a machine with Flutter installed.
 
 ### Telegram & Location (optional)
 
