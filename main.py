@@ -7,7 +7,10 @@ alert/attention state machine on the display thread.
 
 import argparse
 import os
+import platform
+import queue
 import time
+import uuid
 from collections import deque
 
 import cv2
@@ -45,6 +48,8 @@ from yolo.detector import CreateDetectionModel, CreateFaceLandmarker
 from yolo.drawing import DrawHud, DrawAlertOverlay, DrawModernBox, DrawHeadAxes
 from yolo.pipeline import CameraThread, InferenceThread
 from yolo.stats import PerfStats
+from yolo.monitoring import GetAlertSeverity, MonitoringSnapshot, MonitoringStore
+from yolo.api import MonitoringApi
 from yolo.config import LoadSettings
 import yolo.config as _config
 
@@ -83,6 +88,14 @@ def parse_args():
                     help="Path to a JSON settings file overriding config.py defaults.")
     ap.add_argument("--record", metavar="PATH", default=None,
                     help="Record the annotated video to PATH.")
+    ap.add_argument("--api", action="store_true",
+                    help="Expose monitoring status/events for Flutter clients.")
+    ap.add_argument("--api-host", default="127.0.0.1",
+                    help="API bind host (LAN binding requires --api-token).")
+    ap.add_argument("--api-port", type=int, default=8765,
+                    help="API bind port (default 8765; 0 selects a free port).")
+    ap.add_argument("--api-token", default=os.environ.get("DRIVER_API_TOKEN"),
+                    help="Bearer token required for API access, especially on LAN.")
     return ap.parse_args()
 
 
@@ -121,6 +134,14 @@ def main():
         telegram.StartTelegramWorker()
 
     # ── Calibration ───────────────────────────────────────────────
+    def current_pose():
+        r = inference.latest_result()
+        if r is None or not r.head_pose.get("valid"):
+            return {"valid": False}
+        return {"pitch": r.head_pose["pitch"],
+                "yaw": r.head_pose["yaw"],
+                "roll": r.head_pose["roll"], "valid": True}
+
     profile = CalibrationProfile.load(ProfilePath)
     if profile is None or args.calibrate:
         if args.headless or args.skip_calibration:
@@ -132,13 +153,6 @@ def main():
                       "existing profile.")
             profile = profile or CalibrationProfile()
         else:
-            def current_pose():
-                r = inference.latest_result()
-                if r is None or not r.head_pose.get("valid"):
-                    return {"valid": False}
-                return {"pitch": r.head_pose["pitch"],
-                        "yaw": r.head_pose["yaw"],
-                        "roll": r.head_pose["roll"], "valid": True}
             print(f"LOOK STRAIGHT AHEAD — calibrating neutral head pose in "
                   f"{int(CalibrationCountdown)}s...")
             time.sleep(CalibrationCountdown)
@@ -185,6 +199,55 @@ def main():
     recorder_path = args.record
     alarm_muted = False
     paused = False
+    trip_active = True
+    session_id = uuid.uuid4().hex
+    trip_started_at = time.time()
+    api_started_at = time.time()
+    snapshot_sequence = 0
+    api_commands = queue.Queue()
+    monitoring_store = MonitoringStore()
+
+    def handle_api_command(command, payload):
+        api_commands.put((command, payload))
+        return {"accepted": True, "command": command}
+
+    def current_summary():
+        from yolo.summary import BuildSummary
+        return BuildSummary(args.log)
+
+    def current_session():
+        return {
+            "id": session_id,
+            "active": trip_active,
+            "started_at": trip_started_at,
+            "summary_url": "/api/v1/sessions/current/summary",
+        }
+
+    def api_metadata():
+        return {
+            "service": "driver-monitor",
+            "schema_version": 1,
+            "api_version": "v1",
+            "device_name": os.environ.get("DRIVER_DEVICE_NAME") or platform.node(),
+            "platform": platform.system().lower(),
+            "started_at": api_started_at,
+            "capabilities": ["events", "jpeg", "mjpeg", "commands", "summary", "pairing"],
+        }
+
+    monitoring_api = None
+    if args.api:
+        monitoring_api = MonitoringApi(
+            host=args.api_host,
+            port=args.api_port,
+            store=monitoring_store,
+            command_handler=handle_api_command,
+            summary_provider=current_summary,
+            metadata_provider=api_metadata,
+            session_provider=current_session,
+            auth_token=args.api_token,
+        )
+        monitoring_api.start()
+        print(f"Monitoring API listening on {args.api_host}:{monitoring_api.port}")
 
     if not args.headless:
         cv2.namedWindow("Drowsiness Detection", cv2.WINDOW_NORMAL)
@@ -193,6 +256,41 @@ def main():
 
     try:
         while True:
+            # API threads only enqueue commands; state changes happen here on
+            # the display thread so the detector's state remains race-free.
+            while True:
+                try:
+                    command, payload = api_commands.get_nowait()
+                except queue.Empty:
+                    break
+                if command == "mute_alarm":
+                    alarm_muted = True
+                    SetAlarmMuted(True)
+                elif command == "unmute_alarm":
+                    alarm_muted = False
+                    SetAlarmMuted(False)
+                elif command == "start_trip":
+                    if not trip_active:
+                        session_id = uuid.uuid4().hex
+                        trip_started_at = time.time()
+                    trip_active = True
+                    last_log_time = time.monotonic()
+                elif command == "stop_trip":
+                    trip_active = False
+                elif command == "start_calibration":
+                    requested_duration = payload.get("duration", CalibrationDuration)
+                    if not isinstance(requested_duration, (int, float)):
+                        print("[api] calibration duration must be numeric")
+                        continue
+                    duration = max(1.0, min(float(requested_duration), 30.0))
+                    try:
+                        print("[api] calibration started")
+                        profile = RunCalibration(current_pose, duration=duration)
+                        profile.save(ProfilePath)
+                        print("[api] calibration saved")
+                    except RuntimeError as exc:
+                        print(f"[api] calibration failed: {exc}")
+
             result = inference.latest_result()
             if result is None:
                 time.sleep(0.005)
@@ -339,14 +437,49 @@ def main():
                            and SmoothedAttention < AttentionFocusedMin and not HeadDown
                            and not LookingAway and hp["valid"])
 
+            # Publish a JSON-safe state snapshot independently of the OpenCV
+            # renderer. Flutter clients consume this same state over the API.
+            snapshot_sequence += 1
+            monitoring_store.publish(MonitoringSnapshot(
+                sequence=snapshot_sequence,
+                timestamp=time.time(),
+                session_id=session_id,
+                trip_started_at=trip_started_at,
+                trip_active=trip_active,
+                attention=SmoothedAttention,
+                perclos=perclos_now,
+                ema_drowsy=ema_now,
+                ear=result.ear,
+                eyes_closed=eyes_closed,
+                microsleep=blink_state["microsleep"],
+                blinks_per_min=blink_state["blinks_per_min"],
+                pitch=SmoothedPitch,
+                yaw=SmoothedYaw,
+                roll=SmoothedRoll,
+                pose_valid=hp["valid"],
+                face_found=FaceFound,
+                face_lost=FaceLost,
+                face_lost_progress=face_lost_progress,
+                head_down=HeadDown,
+                looking_away=LookingAway,
+                head_tilt=HeadTilt,
+                focused=IsFocused,
+                unfocused=IsUnfocused,
+                alert=AlertMsg,
+                alert_severity=GetAlertSeverity(AlertMsg),
+                fps=draw_fps,
+            ))
+            if monitoring_api is not None:
+                monitoring_api.publish_frame(frame)
+
             # ── Session logging (alert transitions + 1 Hz samples) ──
-            if AlertMsg != prev_alert:
+            if trip_active and AlertMsg != prev_alert:
                 if AlertMsg:
                     logger.alert_event(AlertMsg, 0.0)
                 else:
                     logger.clear_event(prev_alert or "")
                 prev_alert = AlertMsg
-            if Now - last_log_time >= 1.0:
+            if trip_active and Now - last_log_time >= 1.0:
                 logger.frame_sample(SmoothedAttention, perclos_now, ema_now,
                                     SmoothedPitch, SmoothedYaw, SmoothedRoll,
                                     hp["valid"], AlertMsg)
@@ -430,6 +563,8 @@ def main():
             DisplayStats.tock("draw")
 
     finally:
+        if monitoring_api is not None:
+            monitoring_api.stop()
         logger.close()
         if recorder is not None:
             recorder.release()

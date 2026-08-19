@@ -31,6 +31,7 @@ Thumbs.db
 
 # Agent progress scratch (SDD ledger + task briefs)
 .superpowers/
+.docs/
 
 # Calibration profiles
 profiles/
@@ -38,6 +39,9 @@ profiles/
 # Session logs and captures
 logs/
 captures/
+
+# Obsidian vault junction (notes -> Obsidian Vault/Freebuff)
+notes/
 
 # User settings (the .example variant is committed)
 settings.json
