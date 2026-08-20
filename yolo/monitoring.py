@@ -69,6 +69,7 @@ class MonitoringSnapshot:
     unfocused: bool = False
     alert: str | None = None
     alert_severity: int = 0
+    alarm_muted: bool = False
     fps: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
