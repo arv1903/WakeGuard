@@ -9,6 +9,132 @@ import '../models/monitoring_snapshot.dart';
 
 enum BackendConnectionState { disconnected, connecting, connected, error }
 
+// ─── Client-side EMA smoother ──────────────────────────────────────────────
+// Smooths numeric fields that stutter (PERCLOS, blink rate, head pose) and
+// debounces the status text so it doesn't flicker between rapid alert
+// transitions. Raw data is untouched; only the display snapshot is smoothed.
+
+class _SnapshotSmoother {
+  double _attention = 0;
+  double _perclos = 0;
+  double _drowsy = 0;
+  double _blinks = 0;
+  double _pitch = 0;
+  double _yaw = 0;
+  double _roll = 0;
+  int _smoothedSeverity = 0;
+  String? _displayedStatus;
+  bool _initialised = false;
+
+  // Per-field alpha: higher = more responsive, lower = smoother.
+  static const _aAttention = 0.35;
+  static const _aPerclos   = 0.30;
+  static const _aDrowsy    = 0.30;
+  static const _aBlinks    = 0.20;
+  static const _aPose      = 0.35;
+  // Severity EMA — needs to cross hysteresis thresholds to change status.
+  static const _aSeverity  = 0.25;
+
+  double _ema(double prev, double raw, double alpha) =>
+      alpha * raw + (1 - alpha) * prev;
+
+  /// Apply EMA smoothing to a snapshot and return the display-ready version.
+  MonitoringSnapshot smooth(MonitoringSnapshot raw) {
+    if (!_initialised) {
+      _attention = raw.attention;
+      _perclos   = raw.perclos;
+      _drowsy    = raw.emaDrowsy;
+      _blinks    = raw.blinksPerMin;
+      _pitch     = raw.pitch;
+      _yaw       = raw.yaw;
+      _roll      = raw.roll;
+      _smoothedSeverity = raw.alertSeverity;
+      _displayedStatus  = raw.status;
+      _initialised = true;
+      return raw;
+    }
+
+    _attention = _ema(_attention, raw.attention, _aAttention);
+    _perclos   = _ema(_perclos,   raw.perclos,   _aPerclos);
+    _drowsy    = _ema(_drowsy,    raw.emaDrowsy,  _aDrowsy);
+    _blinks    = _ema(_blinks,    raw.blinksPerMin, _aBlinks);
+    _pitch     = _ema(_pitch,     raw.pitch,     _aPose);
+    _yaw       = _ema(_yaw,       raw.yaw,       _aPose);
+    _roll      = _ema(_roll,      raw.roll,      _aPose);
+
+    // Status hysteresis — smoothed severity must cross thresholds to change
+    // the displayed text, preventing rapid flicker.
+    _smoothedSeverity = _ema(_smoothedSeverity.toDouble(), raw.alertSeverity.toDouble(), _aSeverity).round();
+    final newStatus = _statusFromSeverity(_smoothedSeverity, raw);
+    if (newStatus != _displayedStatus) {
+      // Only update if the new status has been stable for a few frames.
+      _pendingCount++;
+      if (_pendingCount >= 3) {
+        _displayedStatus = newStatus;
+        _pendingCount = 0;
+      }
+    } else {
+      _pendingCount = 0;
+    }
+
+    return MonitoringSnapshot(
+      schemaVersion: raw.schemaVersion,
+      sequence:     raw.sequence,
+      serverId:     raw.serverId,
+      timestamp:    raw.timestamp,
+      sessionId:    raw.sessionId,
+      tripStartedAt: raw.tripStartedAt,
+      tripActive:   raw.tripActive,
+      attention:    _attention,
+      perclos:      _perclos,
+      emaDrowsy:    _drowsy,
+      ear:          raw.ear,
+      eyesClosed:   raw.eyesClosed,
+      microsleep:   raw.microsleep,
+      blinksPerMin: _blinks,
+      pitch:        _pitch,
+      yaw:          _yaw,
+      roll:         _roll,
+      poseValid:    raw.poseValid,
+      faceFound:    raw.faceFound,
+      faceLost:     raw.faceLost,
+      faceLostProgress: raw.faceLostProgress,
+      headDown:     raw.headDown,
+      lookingAway:  raw.lookingAway,
+      headTilt:     raw.headTilt,
+      focused:      raw.focused,
+      unfocused:    raw.unfocused,
+      alert:        raw.alert,
+      alertSeverity: raw.alertSeverity,
+      fps:          raw.fps,
+    );
+  }
+
+  int _pendingCount = 0;
+
+  /// Map smoothed severity back to a status label, using the raw snapshot's
+  /// boolean flags for non-severity states (focused, face-lost).
+  String _statusFromSeverity(int sev, MonitoringSnapshot raw) {
+    if (sev >= 4) return 'Critical';
+    if (sev >= 3) return 'Drowsy';
+    if (sev >= 2) return 'Distracted';
+    if (raw.focused) return 'Focused';
+    if (raw.unfocused) return 'Unfocused';
+    if (raw.faceLost) return 'Face not detected';
+    return 'Monitoring';
+  }
+
+  /// The debounced status label, updated only after the smoothed severity
+  /// has been stable for several consecutive frames.
+  String get displayedStatus => _displayedStatus ?? 'Monitoring';
+
+  /// Reset all smoothing state (called on reconnect / new server).
+  void reset() {
+    _initialised = false;
+    _pendingCount = 0;
+  }
+}
+
 class MonitoringClient extends ChangeNotifier {
   MonitoringClient({required String baseUrl, this.token})
       : _baseUrl = _cleanBaseUrl(baseUrl) {
@@ -29,6 +155,7 @@ class MonitoringClient extends ChangeNotifier {
   Timer? _staleTimer;
   Future<void>? _mjpegTask;
   final ValueNotifier<Uint8List?> _latestFrameBytes = ValueNotifier<Uint8List?>(null);
+  final _SnapshotSmoother _smoother = _SnapshotSmoother();
 
   String get baseUrl => _baseUrl;
 
@@ -39,6 +166,9 @@ class MonitoringClient extends ChangeNotifier {
 
   bool get isStale => lastUpdate == null ||
       DateTime.now().difference(lastUpdate!).inSeconds > 3;
+
+  /// Smoothed status label — debounced to prevent flicker.
+  String get displayedStatus => _smoother.displayedStatus;
 
   static String _cleanBaseUrl(String value) {
     final trimmed = value.trim();
@@ -57,6 +187,7 @@ class MonitoringClient extends ChangeNotifier {
     this.token = token?.trim().isEmpty == true ? null : token?.trim();
     snapshot = MonitoringSnapshot.initial();
     lastUpdate = null;
+    _smoother.reset();
     connect();
   }
 
@@ -73,6 +204,7 @@ class MonitoringClient extends ChangeNotifier {
     _generation++;
     connectionState = BackendConnectionState.disconnected;
     _latestFrameBytes.value = null;
+    _smoother.reset();
     notifyListeners();
   }
 
@@ -249,7 +381,8 @@ class MonitoringClient extends ChangeNotifier {
     final newServer = next.serverId.isNotEmpty &&
         next.serverId != snapshot.serverId;
     if (!newServer && next.sequence <= snapshot.sequence) return;
-    snapshot = next;
+    if (newServer) _smoother.reset();
+    snapshot = _smoother.smooth(next);
     lastUpdate = DateTime.now();
     connectionState = BackendConnectionState.connected;
     errorMessage = null;

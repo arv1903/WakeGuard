@@ -110,6 +110,9 @@ def main():
         PrintSummary(BuildSummary(args.summary))
         return
 
+    if args.api:
+        args.headless = True
+
     source = int(args.source) if args.source.isdigit() else args.source
 
     # ── Diagnostics ────────────────────────────────────────────────
@@ -557,9 +560,10 @@ def main():
                     if not recording_enabled:
                         recorder.release()
                         recorder = None
-                elapsed = time.monotonic() - Now
-                if elapsed < FramePeriod:
-                    time.sleep(FramePeriod - elapsed)
+            # Frame-rate limiting — applies in both display and headless/api mode
+            elapsed = time.monotonic() - Now
+            if elapsed < FramePeriod:
+                time.sleep(FramePeriod - elapsed)
             DisplayStats.tock("draw")
 
     finally:

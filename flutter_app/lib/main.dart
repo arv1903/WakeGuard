@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -7,6 +8,46 @@ import 'package:flutter/material.dart';
 import 'models/monitoring_snapshot.dart';
 import 'services/local_backend.dart';
 import 'services/monitoring_client.dart';
+
+// ─── Color System ───────────────────────────────────────────────────────────
+// Deep navy surfaces — elevation through brightness alone, no borders.
+
+class _C {
+  _C._();
+
+  // Surfaces (brightness order)
+  static const background = Color(0xFF0a0e14);
+  static const surface0 = Color(0xFF0e1219);
+  static const surface1 = Color(0xFF131a24);
+  static const surface2 = Color(0xFF19222e);
+
+  // Text
+  static const textPrimary = Color(0xFFe6edf3);
+  static const textSecondary = Color(0xFF7d8590);
+  static const textMuted = Color(0xFF484f58);
+
+  // Accent
+  static const accent = Color(0xFF22d3ee);
+
+  // Semantic
+  static const alertRed = Color(0xFFf87171);
+  static const alertOrange = Color(0xFFfb923c);
+  static const alertAmber = Color(0xFFfbbf24);
+  static const focusedGreen = Color(0xFF34d399);
+  static const offlineYellow = Color(0xFFfbbf24);
+
+  // Gauge
+  static const gaugeTrack = Color(0x15ffffff);
+
+  static Color severity(int level) {
+    if (level >= 4) return alertRed;
+    if (level >= 3) return alertOrange;
+    if (level >= 2) return alertAmber;
+    return accent;
+  }
+}
+
+// ─── Entry Point ────────────────────────────────────────────────────────────
 
 void main() {
   const apiUrl = String.fromEnvironment(
@@ -70,17 +111,49 @@ class _DriverMonitorAppState extends State<DriverMonitorApp> {
       theme: ThemeData(
         brightness: Brightness.dark,
         useMaterial3: true,
-        colorSchemeSeed: Colors.teal,
-        scaffoldBackgroundColor: const Color(0xff0b1117),
+        scaffoldBackgroundColor: _C.background,
+        colorSchemeSeed: _C.accent,
         cardTheme: const CardThemeData(
-          color: Color(0xff131d26),
+          color: _C.surface0,
+          elevation: 0,
           margin: EdgeInsets.zero,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(16)),
+          ),
+        ),
+        dialogTheme: DialogThemeData(
+          backgroundColor: _C.surface1,
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(20)),
+          ),
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: _C.surface2,
+          border: const OutlineInputBorder(
+            borderRadius: BorderRadius.all(Radius.circular(12)),
+            borderSide: BorderSide.none,
+          ),
+          enabledBorder: const OutlineInputBorder(
+            borderRadius: BorderRadius.all(Radius.circular(12)),
+            borderSide: BorderSide.none,
+          ),
+          focusedBorder: const OutlineInputBorder(
+            borderRadius: BorderRadius.all(Radius.circular(12)),
+            borderSide: BorderSide(color: _C.accent, width: 1.5),
+          ),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 14,
+          ),
         ),
       ),
       home: DashboardPage(client: client),
     );
   }
 }
+
+// ─── Dashboard ──────────────────────────────────────────────────────────────
 
 class DashboardPage extends StatelessWidget {
   const DashboardPage({super.key, required this.client});
@@ -89,43 +162,29 @@ class DashboardPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: client,
+    return ListenableBuilder(
+      listenable: client,
       builder: (context, _) {
-        final snapshot = client.snapshot;
+        final snap = client.snapshot;
         return Scaffold(
-          appBar: AppBar(
-            title: const Row(
-              children: [
-                Icon(Icons.directions_car_filled_rounded),
-                SizedBox(width: 12),
-                Text('Driver Monitor'),
-              ],
-            ),
-            actions: [
-              _ConnectionPill(client: client),
-              IconButton(
-                tooltip: 'Connection settings',
-                onPressed: () => _showConnectionDialog(context),
-                icon: const Icon(Icons.settings_outlined),
-              ),
-              const SizedBox(width: 8),
-            ],
-          ),
           body: SafeArea(
             child: LayoutBuilder(
               builder: (context, constraints) {
-                final wide = constraints.maxWidth >= 900;
-                final content = _DashboardContent(
-                  client: client,
-                  snapshot: snapshot,
-                  wide: wide,
-                  onCommandError: (error) => _showError(context, error),
-                  onSummary: () => _showSummary(context),
-                );
+                final wide = constraints.maxWidth >= 880;
                 return SingleChildScrollView(
-                  padding: EdgeInsets.all(wide ? 24 : 16),
-                  child: content,
+                  padding: EdgeInsets.symmetric(
+                    horizontal: wide ? 24 : 12,
+                    vertical: wide ? 20 : 14,
+                  ),
+                  child: _DashboardContent(
+                     client: client,
+                     snapshot: snap,
+                     wide: wide,
+                     onCommandError: (e) => _showError(context, e),
+                     onSummary: () => _showSummary(context),
+                     onSettingsTap: () => _showConnectionDialog(context),
+                     displayedStatus: client.displayedStatus,
+                   ),
                 );
               },
             ),
@@ -135,20 +194,22 @@ class DashboardPage extends StatelessWidget {
     );
   }
 
+  // ── Dialogs ────────────────────────────────────────────────────────────
+
   Future<void> _showConnectionDialog(BuildContext context) async {
-    final urlController = TextEditingController(text: client.baseUrl);
-    final tokenController = TextEditingController(text: client.token ?? '');
+    final urlCtrl = TextEditingController(text: client.baseUrl);
+    final tokenCtrl = TextEditingController(text: client.token ?? '');
     await showDialog<void>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Connect to monitoring device'),
+      builder: (ctx) => AlertDialog(
+        title: const Text('Connect to device'),
         content: SizedBox(
-          width: 460,
+          width: 420,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               TextField(
-                controller: urlController,
+                controller: urlCtrl,
                 keyboardType: TextInputType.url,
                 decoration: const InputDecoration(
                   labelText: 'Backend URL',
@@ -157,32 +218,32 @@ class DashboardPage extends StatelessWidget {
               ),
               const SizedBox(height: 12),
               TextField(
-                controller: tokenController,
+                controller: tokenCtrl,
                 obscureText: true,
                 decoration: const InputDecoration(
-                  labelText: 'Bearer token (optional on localhost)',
+                  labelText: 'Bearer token',
                 ),
               ),
               if (client.token != null) ...[
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
                 Align(
                   alignment: Alignment.centerLeft,
                   child: TextButton.icon(
                     onPressed: () async {
                       try {
                         await client.forgetDevice();
-                        tokenController.clear();
-                        if (dialogContext.mounted) Navigator.pop(dialogContext);
-                      } catch (error) {
-                        tokenController.clear();
-                        if (dialogContext.mounted) {
-                          ScaffoldMessenger.of(dialogContext).showSnackBar(
-                            SnackBar(content: Text(error.toString())),
+                        tokenCtrl.clear();
+                        if (ctx.mounted) Navigator.pop(ctx);
+                      } catch (e) {
+                        tokenCtrl.clear();
+                        if (ctx.mounted) {
+                          ScaffoldMessenger.of(ctx).showSnackBar(
+                            SnackBar(content: Text(e.toString())),
                           );
                         }
                       }
                     },
-                    icon: const Icon(Icons.link_off),
+                    icon: const Icon(Icons.link_off, size: 18),
                     label: const Text('Forget paired device'),
                   ),
                 ),
@@ -194,96 +255,92 @@ class DashboardPage extends StatelessWidget {
           TextButton(
             onPressed: () {
               client.configure(
-                baseUrl: urlController.text,
-                token: tokenController.text,
+                baseUrl: urlCtrl.text,
+                token: tokenCtrl.text,
               );
-              Navigator.pop(dialogContext);
+              Navigator.pop(ctx);
               unawaited(_showPairingDialog(context));
             },
-            child: const Text('Pair device'),
+            child: const Text('Pair'),
           ),
           TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
+            onPressed: () => Navigator.pop(ctx),
             child: const Text('Cancel'),
           ),
           FilledButton(
             onPressed: () {
               client.configure(
-                baseUrl: urlController.text,
-                token: tokenController.text,
+                baseUrl: urlCtrl.text,
+                token: tokenCtrl.text,
               );
-              Navigator.pop(dialogContext);
+              Navigator.pop(ctx);
             },
             child: const Text('Connect'),
           ),
         ],
       ),
     );
-    urlController.dispose();
-    tokenController.dispose();
+    urlCtrl.dispose();
+    tokenCtrl.dispose();
   }
 
   Future<void> _showPairingDialog(BuildContext context) async {
-    final codeController = TextEditingController();
+    final codeCtrl = TextEditingController();
     String? pairingCode;
     String? message;
     bool busy = false;
 
     await showDialog<void>(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setState) {
-          Future<void> showLocalCode() async {
-            setState(() {
-              busy = true;
-              message = null;
-            });
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) {
+          Future<void> showCode() async {
+            setState(() { busy = true; message = null; });
             try {
-              final details = await client.fetchPairing();
-              if (!context.mounted) return;
+              final d = await client.fetchPairing();
+              if (!ctx.mounted) return;
               setState(() {
-                pairingCode = details['code'] as String?;
-                codeController.text = pairingCode ?? '';
+                pairingCode = d['code'] as String?;
+                codeCtrl.text = pairingCode ?? '';
                 message = pairingCode == null
-                    ? 'The backend did not return a pairing code.'
-                    : 'Code expires soon. Share it only with the paired phone.';
+                    ? 'Backend did not return a pairing code.'
+                    : 'Code expires soon. Share only with the paired device.';
               });
-            } catch (error) {
-              if (context.mounted) setState(() => message = error.toString());
+            } catch (e) {
+              if (ctx.mounted) setState(() => message = e.toString());
             } finally {
-              if (context.mounted) setState(() => busy = false);
+              if (ctx.mounted) setState(() => busy = false);
             }
           }
 
           Future<void> pair() async {
-            setState(() {
-              busy = true;
-              message = null;
-            });
+            setState(() { busy = true; message = null; });
             try {
-              await client.exchangePairing(codeController.text);
-              if (context.mounted) Navigator.pop(dialogContext);
-            } catch (error) {
-              if (context.mounted) setState(() => message = error.toString());
+              await client.exchangePairing(codeCtrl.text);
+              if (ctx.mounted) Navigator.pop(ctx);
+            } catch (e) {
+              if (ctx.mounted) setState(() => message = e.toString());
             } finally {
-              if (context.mounted) setState(() => busy = false);
+              if (ctx.mounted) setState(() => busy = false);
             }
           }
 
           return AlertDialog(
             title: const Text('Pair companion device'),
             content: SizedBox(
-              width: 460,
+              width: 420,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   const Text(
-                    'On the desktop, reveal a local code. Enter that code here on the companion device to receive a short-lived access token.',
+                    'Reveal a local code on the desktop, then enter it '
+                    'here on the companion device.',
+                    style: TextStyle(color: _C.textSecondary, fontSize: 13),
                   ),
                   const SizedBox(height: 16),
                   TextField(
-                    controller: codeController,
+                    controller: codeCtrl,
                     textCapitalization: TextCapitalization.characters,
                     decoration: const InputDecoration(
                       labelText: 'Pairing code',
@@ -291,39 +348,52 @@ class DashboardPage extends StatelessWidget {
                     ),
                   ),
                   if (pairingCode != null) ...[
-                    const SizedBox(height: 12),
-                    SelectableText(
+                    const SizedBox(height: 16),
+                    Text(
                       pairingCode!,
                       textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.headlineSmall,
+                      style: const TextStyle(
+                        fontSize: 28,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 6,
+                        color: _C.accent,
+                        fontFamily: 'monospace',
+                      ),
                     ),
                   ],
                   if (message != null) ...[
                     const SizedBox(height: 12),
-                    Text(message!, textAlign: TextAlign.center),
+                    Text(
+                      message!,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: _C.textSecondary,
+                        fontSize: 13,
+                      ),
+                    ),
                   ],
                 ],
               ),
             ),
             actions: [
               TextButton(
-                onPressed: busy ? null : showLocalCode,
-                child: const Text('Reveal local code'),
+                onPressed: busy ? null : showCode,
+                child: const Text('Reveal code'),
               ),
               TextButton(
-                onPressed: busy ? null : () => Navigator.pop(dialogContext),
+                onPressed: busy ? null : () => Navigator.pop(ctx),
                 child: const Text('Cancel'),
               ),
               FilledButton(
                 onPressed: busy ? null : pair,
-                child: Text(busy ? 'Working…' : 'Pair'),
+                child: Text(busy ? 'Pairing…' : 'Pair'),
               ),
             ],
           );
         },
       ),
     );
-    codeController.dispose();
+    codeCtrl.dispose();
   }
 
   void _showError(BuildContext context, Object error) {
@@ -334,42 +404,54 @@ class DashboardPage extends StatelessWidget {
 
   Future<void> _showSummary(BuildContext context) async {
     try {
-      final summary = await client.fetchCurrentSummary();
+      final s = await client.fetchCurrentSummary();
       if (!context.mounted) return;
       await showDialog<void>(
         context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('Current trip summary'),
+        builder: (ctx) => AlertDialog(
+          title: const Text('Trip summary'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Duration: ${_formatNumber(summary['duration'])} s'),
-              Text('Average attention: ${_formatNumber(summary['attention_avg'])}'),
-              Text('Lowest attention: ${_formatNumber(summary['attention_min'])}'),
-              Text('Maximum PERCLOS: ${_formatPercent(summary['perclos_max'])}'),
-              Text('Alerts: ${summary['alert_count'] ?? 0}'),
+              _summaryRow('Duration', '${_fmt(s['duration'])} s'),
+              _summaryRow('Avg attention', _fmt(s['attention_avg'])),
+              _summaryRow('Lowest attention', _fmt(s['attention_min'])),
+              _summaryRow('Max PERCLOS', _fmtPct(s['perclos_max'])),
+              _summaryRow('Alerts', '${s['alert_count'] ?? 0}'),
             ],
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
+              onPressed: () => Navigator.pop(ctx),
               child: const Text('Close'),
             ),
           ],
         ),
       );
-    } catch (error) {
-      if (context.mounted) _showError(context, error);
+    } catch (e) {
+      if (context.mounted) _showError(context, e);
     }
   }
 
-  String _formatNumber(Object? value) =>
-      value is num ? value.toStringAsFixed(1) : '—';
+  Widget _summaryRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(color: _C.textSecondary)),
+          Text(value, style: const TextStyle(color: _C.textPrimary)),
+        ],
+      ),
+    );
+  }
 
-  String _formatPercent(Object? value) =>
-      value is num ? '${(value * 100).toStringAsFixed(1)}%' : '—';
+  String _fmt(Object? v) => v is num ? v.toStringAsFixed(1) : '—';
+  String _fmtPct(Object? v) => v is num ? '${(v * 100).toStringAsFixed(1)}%' : '—';
 }
+
+// ─── Layout ─────────────────────────────────────────────────────────────────
 
 class _DashboardContent extends StatelessWidget {
   const _DashboardContent({
@@ -378,6 +460,8 @@ class _DashboardContent extends StatelessWidget {
     required this.wide,
     required this.onCommandError,
     required this.onSummary,
+    this.onSettingsTap,
+    this.displayedStatus,
   });
 
   final MonitoringClient client;
@@ -385,12 +469,14 @@ class _DashboardContent extends StatelessWidget {
   final bool wide;
   final void Function(Object error) onCommandError;
   final VoidCallback onSummary;
+  final VoidCallback? onSettingsTap;
+  final String? displayedStatus;
 
   @override
   Widget build(BuildContext context) {
-    final camera = _CameraCard(client: client, snapshot: snapshot);
-    final status = _StatusCard(snapshot: snapshot);
-    final metrics = _MetricsGrid(snapshot: snapshot);
+    final camera = _CameraView(client: client, snapshot: snapshot);
+    final status = _StatusHero(snapshot: snapshot, client: client, onSettingsTap: onSettingsTap, displayedStatus: displayedStatus);
+    final metrics = _MetricRow(snapshot: snapshot);
 
     if (wide) {
       return Column(
@@ -400,14 +486,14 @@ class _DashboardContent extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(flex: 7, child: camera),
-              const SizedBox(width: 20),
+              const SizedBox(width: 16),
               Expanded(flex: 4, child: status),
             ],
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
           metrics,
-          const SizedBox(height: 20),
-          _Controls(
+          const SizedBox(height: 16),
+          _ControlBar(
             client: client,
             onError: onCommandError,
             onSummary: onSummary,
@@ -420,12 +506,12 @@ class _DashboardContent extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         status,
-        const SizedBox(height: 16),
+        const SizedBox(height: 12),
         camera,
-        const SizedBox(height: 16),
+        const SizedBox(height: 12),
         metrics,
-        const SizedBox(height: 16),
-        _Controls(
+        const SizedBox(height: 12),
+        _ControlBar(
           client: client,
           onError: onCommandError,
           onSummary: onSummary,
@@ -435,71 +521,144 @@ class _DashboardContent extends StatelessWidget {
   }
 }
 
+// ─── Connection Status ──────────────────────────────────────────────────────
+
 class _ConnectionPill extends StatelessWidget {
-  const _ConnectionPill({required this.client});
+  const _ConnectionPill({required this.client, this.onTap});
 
   final MonitoringClient client;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    final connected = client.connectionState == BackendConnectionState.connected &&
-        !client.isStale;
-    final color = connected ? Colors.tealAccent : Colors.amber;
+    final connected =
+        client.connectionState == BackendConnectionState.connected &&
+            !client.isStale;
+    final color = connected ? _C.focusedGreen : _C.offlineYellow;
     final label = connected
-        ? 'Connected'
+        ? 'Live'
         : client.connectionState == BackendConnectionState.connecting
             ? 'Connecting'
             : 'Offline';
-    return Padding(
-      padding: const EdgeInsets.only(right: 8),
-      child: Chip(
-        avatar: Icon(Icons.circle, size: 10, color: color),
-        label: Text(label),
-        side: BorderSide(color: color.withOpacity(.35)),
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 7,
+              height: 7,
+              decoration: BoxDecoration(
+                color: color,
+                shape: BoxShape.circle,
+                boxShadow: [BoxShadow(color: color.withOpacity(0.4), blurRadius: 4)],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: TextStyle(
+                color: color,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
-class _StatusCard extends StatelessWidget {
-  const _StatusCard({required this.snapshot});
+// ─── Status Hero ────────────────────────────────────────────────────────────
+
+class _StatusHero extends StatelessWidget {
+  const _StatusHero({required this.snapshot, required this.client, this.onSettingsTap, this.displayedStatus});
 
   final MonitoringSnapshot snapshot;
+  final MonitoringClient client;
+  final VoidCallback? onSettingsTap;
+  final String? displayedStatus;
 
   @override
   Widget build(BuildContext context) {
-    final color = _severityColor(snapshot);
+    final color = _C.severity(snapshot.alertSeverity);
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('CURRENT STATUS', style: Theme.of(context).textTheme.labelLarge),
-            const SizedBox(height: 12),
-            Text(
-              snapshot.status,
-              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                    color: color,
-                    fontWeight: FontWeight.w700,
+            // ── Trip / connection row ──
+            Row(
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: snapshot.tripActive ? _C.focusedGreen : _C.textMuted,
+                    shape: BoxShape.circle,
                   ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    snapshot.tripActive ? 'Trip active' : 'Trip stopped',
+                    style: TextStyle(
+                      color: snapshot.tripActive
+                          ? _C.textPrimary
+                          : _C.textSecondary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+                _ConnectionPill(client: client, onTap: onSettingsTap),
+              ],
             ),
+
+            const SizedBox(height: 28),
+
+            // ── Attention gauge ──
+            _AttentionGauge(value: snapshot.attention, color: color),
+
             const SizedBox(height: 20),
-            Center(child: _AttentionGauge(value: snapshot.attention, color: color)),
-            const SizedBox(height: 18),
+
+            // ── Status label ──
             Text(
-              snapshot.alert ?? (snapshot.tripActive ? 'Monitoring active' : 'Trip stopped'),
+              snapshot.alert ?? displayedStatus ?? snapshot.status,
               textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodyLarge,
+              style: TextStyle(
+                color: snapshot.alert != null ? color : _C.textSecondary,
+                fontSize: 14,
+                fontWeight: snapshot.alert != null ? FontWeight.w600 : FontWeight.w400,
+              ),
             ),
+
             if (snapshot.faceLost) ...[
               const SizedBox(height: 16),
-              LinearProgressIndicator(
-                value: snapshot.faceLostProgress.clamp(0, 1).toDouble(),
-                color: Colors.orange,
+              ClipRRect(
+                borderRadius: BorderRadius.circular(3),
+                child: LinearProgressIndicator(
+                  value: snapshot.faceLostProgress.clamp(0, 1).toDouble(),
+                  minHeight: 4,
+                  backgroundColor: _C.surface2,
+                  color: _C.alertOrange,
+                ),
               ),
-              const SizedBox(height: 6),
-              const Text('Face signal unavailable', textAlign: TextAlign.center),
+              const SizedBox(height: 8),
+              const Text(
+                'Face signal unavailable',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: _C.textMuted, fontSize: 12),
+              ),
             ],
           ],
         ),
@@ -507,6 +666,8 @@ class _StatusCard extends StatelessWidget {
     );
   }
 }
+
+// ─── Attention Gauge ────────────────────────────────────────────────────────
 
 class _AttentionGauge extends StatelessWidget {
   const _AttentionGauge({required this.value, required this.color});
@@ -517,18 +678,36 @@ class _AttentionGauge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: 190,
-      height: 120,
+      width: 200,
+      height: 110,
       child: CustomPaint(
         painter: _GaugePainter(value: value, color: color),
         child: Center(
           child: Padding(
-            padding: const EdgeInsets.only(top: 28),
-            child: Text(
-              value.toStringAsFixed(0),
-              style: Theme.of(context).textTheme.displaySmall?.copyWith(
+            padding: const EdgeInsets.only(top: 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  value.toStringAsFixed(0),
+                  style: TextStyle(
+                    fontSize: 44,
                     fontWeight: FontWeight.w700,
+                    color: color,
+                    height: 1.0,
                   ),
+                ),
+                const SizedBox(height: 2),
+                const Text(
+                  'ATTENTION',
+                  style: TextStyle(
+                    fontSize: 10,
+                    letterSpacing: 2,
+                    color: _C.textMuted,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
             ),
           ),
         ),
@@ -545,36 +724,50 @@ class _GaugePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height - 4);
-    final radius = size.width / 2 - 12;
-    final background = Paint()
-      ..color = Colors.white.withOpacity(.08)
+    final center = Offset(size.width / 2, size.height - 2);
+    final radius = size.width / 2 - 16;
+    final rect = Rect.fromCircle(center: center, radius: radius);
+
+    final trackPaint = Paint()
+      ..color = _C.gaugeTrack
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 14
+      ..strokeWidth = 10
       ..strokeCap = StrokeCap.round;
-    final foreground = Paint()
+
+    final fillPaint = Paint()
       ..color = color
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 14
+      ..strokeWidth = 10
       ..strokeCap = StrokeCap.round;
-    final rect = Rect.fromCircle(center: center, radius: radius);
-    canvas.drawArc(rect, 3.14, 3.14, false, background);
-    canvas.drawArc(
-      rect,
-      3.14,
-      3.14 * (value.clamp(0, 100).toDouble() / 100),
-      false,
-      foreground,
-    );
+
+    // Glow layer
+    final glowPaint = Paint()
+      ..color = color.withOpacity(0.15)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 24
+      ..strokeCap = StrokeCap.round
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10);
+
+    const startAngle = math.pi;
+    const sweepAngle = math.pi;
+    final valueSweep = sweepAngle * (value.clamp(0, 100).toDouble() / 100);
+
+    canvas.drawArc(rect, startAngle, sweepAngle, false, trackPaint);
+    if (valueSweep > 0) {
+      canvas.drawArc(rect, startAngle, valueSweep, false, glowPaint);
+      canvas.drawArc(rect, startAngle, valueSweep, false, fillPaint);
+    }
   }
 
   @override
-  bool shouldRepaint(_GaugePainter oldDelegate) =>
-      oldDelegate.value != value || oldDelegate.color != color;
+  bool shouldRepaint(_GaugePainter old) =>
+      old.value != value || old.color != color;
 }
 
-class _CameraCard extends StatelessWidget {
-  const _CameraCard({required this.client, required this.snapshot});
+// ─── Camera Feed ────────────────────────────────────────────────────────────
+
+class _CameraView extends StatelessWidget {
+  const _CameraView({required this.client, required this.snapshot});
 
   final MonitoringClient client;
   final MonitoringSnapshot snapshot;
@@ -589,28 +782,70 @@ class _CameraCard extends StatelessWidget {
           fit: StackFit.expand,
           children: [
             _MjpegView(client: client),
+
+            // ── Face detection badge (top left) ──
             Positioned(
-              left: 16,
-              top: 16,
-              child: Chip(
-                avatar: Icon(
-                  Icons.videocam,
-                  size: 16,
-                  color: snapshot.faceFound ? Colors.tealAccent : Colors.orange,
-                ),
-                label: Text(snapshot.faceFound ? 'Driver detected' : 'No face detected'),
+              left: 12,
+              top: 12,
+              child: _GlassBadge(
+                icon: snapshot.faceFound
+                    ? Icons.person_rounded
+                    : Icons.person_off_rounded,
+                label: snapshot.faceFound ? 'Driver detected' : 'No face',
+                color: snapshot.faceFound ? _C.focusedGreen : _C.alertOrange,
               ),
             ),
+
+            // ── FPS badge (bottom right) ──
             Positioned(
-              right: 16,
-              bottom: 16,
-              child: Text(
-                '${snapshot.fps.toStringAsFixed(1)} FPS',
-                style: Theme.of(context).textTheme.labelMedium,
+              right: 12,
+              bottom: 12,
+              child: _GlassBadge(
+                icon: Icons.speed_rounded,
+                label: '${snapshot.fps.toStringAsFixed(0)} fps',
+                color: _C.textMuted,
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _GlassBadge extends StatelessWidget {
+  const _GlassBadge({
+    required this.icon,
+    required this.label,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.55),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -624,14 +859,21 @@ class _CameraPlaceholder extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ColoredBox(
-      color: const Color(0xff070b0f),
+      color: _C.surface0,
       child: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.videocam_off_outlined, size: 48, color: Colors.white.withOpacity(.5)),
+            Icon(
+              Icons.videocam_off_rounded,
+              size: 40,
+              color: _C.textMuted,
+            ),
             const SizedBox(height: 12),
-            Text(message),
+            Text(
+              message,
+              style: const TextStyle(color: _C.textSecondary, fontSize: 13),
+            ),
           ],
         ),
       ),
@@ -639,9 +881,6 @@ class _CameraPlaceholder extends StatelessWidget {
   }
 }
 
-/// Renders the newest JPEG frame from the persistent MJPEG stream. Frames are
-/// decoded on the UI thread with the codec cached, so dropped frames are
-/// simply skipped and playback stays smooth.
 class _MjpegView extends StatefulWidget {
   const _MjpegView({required this.client});
 
@@ -665,10 +904,10 @@ class _MjpegViewState extends State<_MjpegView> {
   }
 
   @override
-  void didUpdateWidget(_MjpegView oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.client != widget.client) {
-      oldWidget.client.latestFrameBytes.removeListener(_onFrame);
+  void didUpdateWidget(_MjpegView old) {
+    super.didUpdateWidget(old);
+    if (old.client != widget.client) {
+      old.client.latestFrameBytes.removeListener(_onFrame);
       widget.client.latestFrameBytes.addListener(_onFrame);
     }
   }
@@ -682,29 +921,26 @@ class _MjpegViewState extends State<_MjpegView> {
 
   void _onFrame() {
     final bytes = widget.client.latestFrameBytes.value;
-    if (bytes == null) return;
-    _decode(bytes);
+    if (bytes != null) _decode(bytes);
   }
 
   void _decode(Uint8List bytes) {
-    // Drop stale work: only the newest frame is rendered, so a slow codec
-    // never queues frames behind the live feed.
     _pendingDecode = true;
     ui.instantiateImageCodec(bytes).then((codec) {
       if (!mounted || !_pendingDecode) {
         codec.dispose();
         return;
       }
-      codec.getNextFrame().then((frameInfo) {
+      codec.getNextFrame().then((info) {
         if (!mounted || !_pendingDecode) {
-          frameInfo.image.dispose();
+          info.image.dispose();
           codec.dispose();
           return;
         }
         _pendingDecode = false;
         _codec?.dispose();
         _codec = codec;
-        setState(() => _frame = frameInfo.image);
+        setState(() => _frame = info.image);
       });
     });
   }
@@ -715,8 +951,8 @@ class _MjpegViewState extends State<_MjpegView> {
     if (frame == null) {
       return _CameraPlaceholder(
         message: widget.client.connectionState == BackendConnectionState.connected
-            ? 'Waiting for camera stream…'
-            : 'Connect to the monitoring device',
+            ? 'Waiting for camera…'
+            : 'Connect to monitoring device',
       );
     }
     return RawImage(
@@ -727,80 +963,110 @@ class _MjpegViewState extends State<_MjpegView> {
   }
 }
 
-class _MetricsGrid extends StatelessWidget {
-  const _MetricsGrid({required this.snapshot});
+// ─── Metrics ────────────────────────────────────────────────────────────────
+
+class _MetricRow extends StatelessWidget {
+  const _MetricRow({required this.snapshot});
 
   final MonitoringSnapshot snapshot;
 
   @override
   Widget build(BuildContext context) {
-    return Wrap(
-      spacing: 12,
-      runSpacing: 12,
+    return Row(
       children: [
-        _MetricTile(
-          label: 'PERCLOS',
-          value: '${(snapshot.perclos * 100).toStringAsFixed(1)}%',
-          icon: Icons.remove_red_eye_outlined,
+        Expanded(
+          child: _MetricCard(
+            label: 'PERCLOS',
+            value: '${(snapshot.perclos * 100).toStringAsFixed(1)}%',
+            color: _metricColor(snapshot.perclos, 0.3, 0.6),
+          ),
         ),
-        _MetricTile(
-          label: 'DROWSINESS',
-          value: '${(snapshot.emaDrowsy * 100).toStringAsFixed(1)}%',
-          icon: Icons.bedtime_outlined,
+        const SizedBox(width: 12),
+        Expanded(
+          child: _MetricCard(
+            label: 'DROWSINESS',
+            value: '${(snapshot.emaDrowsy * 100).toStringAsFixed(1)}%',
+            color: _metricColor(snapshot.emaDrowsy, 0.4, 0.7),
+          ),
         ),
-        _MetricTile(
-          label: 'BLINK RATE',
-          value: '${snapshot.blinksPerMin.toStringAsFixed(1)}/min',
-          icon: Icons.visibility_outlined,
+        const SizedBox(width: 12),
+        Expanded(
+          child: _MetricCard(
+            label: 'BLINK RATE',
+            value: '${snapshot.blinksPerMin.toStringAsFixed(0)}/min',
+            color: _C.textPrimary,
+          ),
         ),
-        _MetricTile(
-          label: 'HEAD POSE',
-          value: snapshot.poseValid
-              ? '${snapshot.yaw.toStringAsFixed(0)}° yaw'
-              : 'Unavailable',
-          icon: Icons.face_retouching_natural_outlined,
+        const SizedBox(width: 12),
+        Expanded(
+          child: _MetricCard(
+            label: 'HEAD YAW',
+            value: snapshot.poseValid
+                ? '${snapshot.yaw.toStringAsFixed(0)}°'
+                : '—',
+            color: snapshot.poseValid ? _C.textPrimary : _C.textMuted,
+          ),
         ),
       ],
     );
   }
+
+  Color _metricColor(double value, double warn, double crit) {
+    if (value >= crit) return _C.alertRed;
+    if (value >= warn) return _C.alertAmber;
+    return _C.textPrimary;
+  }
 }
 
-class _MetricTile extends StatelessWidget {
-  const _MetricTile({required this.label, required this.value, required this.icon});
+class _MetricCard extends StatelessWidget {
+  const _MetricCard({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
 
   final String label;
   final String value;
-  final IconData icon;
+  final Color color;
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: 220,
-      child: Card(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Row(
-            children: [
-              Icon(icon, color: Colors.tealAccent),
-              const SizedBox(width: 12),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(label, style: Theme.of(context).textTheme.labelSmall),
-                  const SizedBox(height: 4),
-                  Text(value, style: Theme.of(context).textTheme.titleMedium),
-                ],
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 1.2,
+                color: _C.textMuted,
               ),
-            ],
-          ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              value,
+              style: TextStyle(
+                fontSize: 22,
+                fontWeight: FontWeight.w700,
+                color: color,
+                height: 1.0,
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
 }
 
-class _Controls extends StatelessWidget {
-  const _Controls({
+// ─── Controls ───────────────────────────────────────────────────────────────
+
+class _ControlBar extends StatelessWidget {
+  const _ControlBar({
     required this.client,
     required this.onError,
     required this.onSummary,
@@ -810,11 +1076,11 @@ class _Controls extends StatelessWidget {
   final void Function(Object error) onError;
   final VoidCallback onSummary;
 
-  Future<void> _command(String path, [Map<String, dynamic>? payload]) async {
+  Future<void> _cmd(String path, [Map<String, dynamic>? payload]) async {
     try {
       await client.sendCommand(path, payload);
-    } catch (error) {
-      onError(error);
+    } catch (e) {
+      onError(e);
     }
   }
 
@@ -822,35 +1088,36 @@ class _Controls extends StatelessWidget {
   Widget build(BuildContext context) {
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         child: Wrap(
-          spacing: 12,
-          runSpacing: 12,
+          spacing: 8,
+          runSpacing: 8,
           children: [
-            FilledButton.icon(
-              onPressed: () => _command('/api/v1/trips/start'),
-              icon: const Icon(Icons.play_arrow),
-              label: const Text('Start trip'),
+            _ControlButton(
+              icon: Icons.play_arrow_rounded,
+              label: 'Start trip',
+              filled: true,
+              onTap: () => _cmd('/api/v1/trips/start'),
             ),
-            OutlinedButton.icon(
-              onPressed: () => _command('/api/v1/trips/stop'),
-              icon: const Icon(Icons.stop),
-              label: const Text('Stop trip'),
+            _ControlButton(
+              icon: Icons.stop_rounded,
+              label: 'Stop trip',
+              onTap: () => _cmd('/api/v1/trips/stop'),
             ),
-            OutlinedButton.icon(
-              onPressed: () => _command('/api/v1/calibration/start'),
-              icon: const Icon(Icons.center_focus_strong),
-              label: const Text('Calibrate'),
+            _ControlButton(
+              icon: Icons.center_focus_strong_rounded,
+              label: 'Calibrate',
+              onTap: () => _cmd('/api/v1/calibration/start'),
             ),
-            OutlinedButton.icon(
-              onPressed: () => _command('/api/v1/alarm/mute'),
-              icon: const Icon(Icons.volume_off_outlined),
-              label: const Text('Mute alarm'),
+            _ControlButton(
+              icon: Icons.volume_off_rounded,
+              label: 'Mute',
+              onTap: () => _cmd('/api/v1/alarm/mute'),
             ),
-            OutlinedButton.icon(
-              onPressed: onSummary,
-              icon: const Icon(Icons.insights_outlined),
-              label: const Text('Trip summary'),
+            _ControlButton(
+              icon: Icons.insights_rounded,
+              label: 'Summary',
+              onTap: onSummary,
             ),
           ],
         ),
@@ -859,10 +1126,50 @@ class _Controls extends StatelessWidget {
   }
 }
 
-Color _severityColor(MonitoringSnapshot snapshot) {
-  if (snapshot.alertSeverity >= 4) return Colors.redAccent;
-  if (snapshot.alertSeverity >= 3) return Colors.orangeAccent;
-  if (snapshot.alertSeverity >= 2) return Colors.amber;
-  if (snapshot.focused) return Colors.tealAccent;
-  return Colors.blueAccent;
+class _ControlButton extends StatelessWidget {
+  const _ControlButton({
+    required this.icon,
+    required this.label,
+    this.filled = false,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool filled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: filled ? _C.accent.withOpacity(0.12) : _C.surface2,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                icon,
+                size: 18,
+                color: filled ? _C.accent : _C.textSecondary,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  color: filled ? _C.accent : _C.textSecondary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
