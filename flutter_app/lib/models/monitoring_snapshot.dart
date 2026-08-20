@@ -28,6 +28,7 @@ class MonitoringSnapshot {
     required this.unfocused,
     required this.alert,
     required this.alertSeverity,
+    required this.alarmMuted,
     required this.fps,
   });
 
@@ -60,6 +61,7 @@ class MonitoringSnapshot {
         unfocused: false,
         alert: null,
         alertSeverity: 0,
+        alarmMuted: false,
         fps: 0,
       );
 
@@ -102,6 +104,7 @@ class MonitoringSnapshot {
       unfocused: flag('unfocused'),
       alert: json['alert'] as String?,
       alertSeverity: (json['alert_severity'] as num?)?.toInt() ?? 0,
+      alarmMuted: flag('alarm_muted'),
       fps: number('fps'),
     );
   }
@@ -134,6 +137,7 @@ class MonitoringSnapshot {
   final bool unfocused;
   final String? alert;
   final int alertSeverity;
+  final bool alarmMuted;
   final double fps;
 
   String get status {

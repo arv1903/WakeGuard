@@ -470,6 +470,7 @@ def main():
                 unfocused=IsUnfocused,
                 alert=AlertMsg,
                 alert_severity=GetAlertSeverity(AlertMsg),
+                alarm_muted=alarm_muted,
                 fps=draw_fps,
             ))
             if monitoring_api is not None:

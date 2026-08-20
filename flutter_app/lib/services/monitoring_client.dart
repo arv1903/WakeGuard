@@ -106,6 +106,7 @@ class _SnapshotSmoother {
       unfocused:    raw.unfocused,
       alert:        raw.alert,
       alertSeverity: raw.alertSeverity,
+      alarmMuted:   raw.alarmMuted,
       fps:          raw.fps,
     );
   }
@@ -153,7 +154,6 @@ class MonitoringClient extends ChangeNotifier {
   int _generation = 0;
   bool _disposed = false;
   Timer? _staleTimer;
-  Future<void>? _mjpegTask;
   final ValueNotifier<Uint8List?> _latestFrameBytes = ValueNotifier<Uint8List?>(null);
   final _SnapshotSmoother _smoother = _SnapshotSmoother();
 
@@ -213,7 +213,7 @@ class MonitoringClient extends ChangeNotifier {
   /// drops; the backend drops old frames itself, so the client can never
   /// block detection.
   void _startMjpeg(int generation) {
-    _mjpegTask = _runMjpeg(generation);
+    _runMjpeg(generation);
   }
 
   Future<void> _runMjpeg(int generation) async {
@@ -276,6 +276,7 @@ class MonitoringClient extends ChangeNotifier {
 
     final separatorBytes = separator;
     var cursor = 0;
+    List<int>? lastFrame;
     while (true) {
       final start = _indexOf(bytes, separatorBytes, cursor);
       if (start < 0) break;
@@ -290,10 +291,13 @@ class MonitoringClient extends ChangeNotifier {
       final bodyStart = headerEnd + 4;
       final bodyEnd = bodyStart + length;
       if (bodyEnd > bytes.length) break;
-      _latestFrameBytes.value = Uint8List.fromList(
-        bytes.sublist(bodyStart, bodyEnd),
-      );
+      // Only keep the last complete frame from this chunk — intermediate
+      // frames are stale by the time the viewer decodes them.
+      lastFrame = bytes.sublist(bodyStart, bodyEnd);
       cursor = bodyEnd;
+    }
+    if (lastFrame != null) {
+      _latestFrameBytes.value = Uint8List.fromList(lastFrame);
     }
     if (cursor > 0 && cursor < bytes.length) {
       _mjpegBuffer.add(bytes.sublist(cursor));
@@ -367,7 +371,7 @@ class MonitoringClient extends ChangeNotifier {
       if (line.startsWith('data: ')) {
         dataLine = line.substring(6);
       } else if (line.isEmpty && dataLine != null) {
-        final event = jsonDecode(dataLine!) as Map<String, dynamic>;
+        final event = jsonDecode(dataLine) as Map<String, dynamic>;
         result = MonitoringSnapshot.fromJson(
           event['data'] as Map<String, dynamic>,
         );
@@ -462,14 +466,16 @@ class MonitoringClient extends ChangeNotifier {
   }
 
   Future<void> sendCommand(String path, [Map<String, dynamic>? payload]) async {
+    final body = utf8.encode(jsonEncode(payload ?? <String, dynamic>{}));
     final request = await _http.postUrl(Uri.parse('$_baseUrl$path'));
     request.headers.contentType = ContentType.json;
+    request.headers.contentLength = body.length;
     _headers().forEach(request.headers.add);
-    request.write(jsonEncode(payload ?? <String, dynamic>{}));
+    request.add(body);
     final response = await request.close();
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      final body = await response.transform(utf8.decoder).join();
-      throw HttpException('Command failed (${response.statusCode}): $body');
+      final respBody = await response.transform(utf8.decoder).join();
+      throw HttpException('Command failed (${response.statusCode}): $respBody');
     }
   }
 

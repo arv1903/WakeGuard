@@ -152,7 +152,7 @@ On first run the application **auto-calibrates** the neutral head pose (hold sti
 
 | Flag | Effect |
 |---|---|
-| `--source ID|PATH` | Camera index (default `0`) or video file for replay |
+| `--source ID`|PATH` | Camera index (default `0`) or video file for replay |
 | `--headless` | No display window (benchmark / replay / CI smoke) |
 | `--no-telegram` | Disable Telegram dispatch |
 | `--no-alarm` | Disable the audible alarm |
