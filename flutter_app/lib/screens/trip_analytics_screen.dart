@@ -19,6 +19,7 @@ class _TripAnalyticsScreenState extends State<TripAnalyticsScreen> {
   final List<_LogEntry> _eventLog = [];
   static const int _maxBuffer = 360;
   String _filterLevel = 'All';
+  DateTime? _lastSampleTime;
 
   @override
   void initState() {
@@ -35,48 +36,59 @@ class _TripAnalyticsScreenState extends State<TripAnalyticsScreen> {
   void _onSnapshot() {
     final snap = widget.client.snapshot;
     if (snap.sequence <= 0) return;
+    final now = DateTime.now();
+    // Throttle telemetry to 1 Hz like SessionLogger (was every snapshot ~30fps → 12s fill + churn)
+    final shouldSample = _lastSampleTime == null ||
+        now.difference(_lastSampleTime!).inMilliseconds >= 1000;
 
-    setState(() {
+    var changed = shouldSample;
+    if (shouldSample) {
+      _lastSampleTime = now;
       _telemetryBuffer.add(_TelemetryPoint(
-        time: DateTime.now(),
+        time: now,
         attention: snap.attention,
         perclos: snap.perclos,
       ));
       if (_telemetryBuffer.length > _maxBuffer) {
         _telemetryBuffer.removeAt(0);
       }
+    }
 
-      if (snap.alert != null) {
-        final now = DateTime.now();
-        final duplicate = _eventLog.any((e) =>
-            e.type == snap.alert && now.difference(e.time).inSeconds < 5);
-        if (!duplicate) {
-          _eventLog.insert(0, _LogEntry(
-            time: now,
-            type: snap.alert!,
-            severity: snap.alertSeverity,
-          ));
-          if (_eventLog.length > 200) _eventLog.removeLast();
-        }
+    if (snap.alert != null) {
+      final duplicate = _eventLog.any(
+          (e) => e.type == snap.alert && now.difference(e.time).inSeconds < 5);
+      if (!duplicate) {
+        changed = true;
+        _eventLog.insert(
+            0,
+            _LogEntry(
+              time: now,
+              type: snap.alert!,
+              severity: snap.alertSeverity,
+            ));
+        if (_eventLog.length > 200) _eventLog.removeLast();
       }
-    });
+    }
+    if (changed && mounted) setState(() {});
   }
 
   List<_LogEntry> get _filteredLog {
     if (_filterLevel == 'All') return _eventLog;
-    if (_filterLevel == 'Critical') return _eventLog.where((e) => e.severity >= 4).toList();
-    if (_filterLevel == 'Warning') return _eventLog.where((e) => e.severity >= 2 && e.severity < 4).toList();
+    if (_filterLevel == 'Critical')
+      return _eventLog.where((e) => e.severity >= 4).toList();
+    if (_filterLevel == 'Warning')
+      return _eventLog.where((e) => e.severity >= 2 && e.severity < 4).toList();
     return _eventLog;
   }
 
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: widget.client,
-      builder: (context, _) {
+    return SafeArea(
+      child: Builder(builder: (context) {
         final snap = widget.client.snapshot;
         final elapsed = snap.tripStartedAt != null
-            ? DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch((snap.tripStartedAt! * 1000).toInt()))
+            ? DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(
+                (snap.tripStartedAt! * 1000).toInt()))
             : Duration.zero;
         final mins = elapsed.inMinutes;
         final secs = elapsed.inSeconds % 60;
@@ -87,108 +99,224 @@ class _TripAnalyticsScreenState extends State<TripAnalyticsScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Text('Trip Analytics & Logs',
-                style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700, color: AppColors.textPrimary, letterSpacing: -1)),
+                  style: TextStyle(
+                      fontSize: 30,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.textPrimary,
+                      letterSpacing: -1)),
               const SizedBox(height: 24),
-              // KPI Cards with sparklines
-              Row(children: [
-                Expanded(child: _KpiCard(
-                  title: 'TRIP DURATION', value: '${mins}m ${secs}s',
-                  subtitle: snap.tripActive ? 'Ongoing' : 'Stopped',
-                  icon: Icons.timer_outlined, accent: AppColors.focusedGreen,
-                  sparkData: _telemetryBuffer.map((p) => p.attention).toList(),
-                  sparkColor: AppColors.focusedGreen,
-                )),
-                const SizedBox(width: 16),
-                Expanded(child: _KpiCard(
-                  title: 'AVG ATTENTION', value: '${snap.attention.toStringAsFixed(0)}/100',
-                  subtitle: snap.focused ? 'Focused' : 'Degrading',
-                  icon: Icons.visibility_outlined, accent: const Color(0xFF22d3ee),
-                  sparkData: _telemetryBuffer.map((p) => p.attention).toList(),
-                  sparkColor: const Color(0xFF22d3ee),
-                )),
-                const SizedBox(width: 16),
-                Expanded(child: _KpiCard(
-                  title: 'CRITICAL EVENTS', value: '${_eventLog.where((e) => e.severity >= 4).length}',
-                  subtitle: snap.alert ?? 'None',
-                  icon: Icons.warning_amber_outlined, accent: AppColors.alertRed, isAlert: snap.alert != null,
-                )),
-                const SizedBox(width: 16),
-                Expanded(child: _KpiCard(
-                  title: 'BLINK RATE', value: '${snap.blinksPerMin.toStringAsFixed(0)}/min',
-                  subtitle: 'Normal', icon: Icons.remove_red_eye_outlined, accent: AppColors.focusedGreen,
-                )),
-              ]),
+              // KPI Cards with sparklines — responsive: wrap on narrow screens (<1000px)
+              LayoutBuilder(builder: (context, constraints) {
+                final isCompact = constraints.maxWidth < 900;
+                if (isCompact) {
+                  return Column(children: [
+                    Row(children: [
+                      Expanded(
+                          child: _KpiCard(
+                              title: 'TRIP DURATION',
+                              value: '${mins}m ${secs}s',
+                              subtitle: snap.tripActive ? 'Ongoing' : 'Stopped',
+                              icon: Icons.timer_outlined,
+                              accent: AppColors.focusedGreen,
+                              sparkData: _telemetryBuffer
+                                  .map((p) => p.attention)
+                                  .toList(),
+                              sparkColor: AppColors.focusedGreen)),
+                      const SizedBox(width: 16),
+                      Expanded(
+                          child: _KpiCard(
+                              title: 'AVG ATTENTION',
+                              value: '${snap.attention.toStringAsFixed(0)}/100',
+                              subtitle: snap.focused ? 'Focused' : 'Degrading',
+                              icon: Icons.visibility_outlined,
+                              accent: const Color(0xFF22d3ee),
+                              sparkData: _telemetryBuffer
+                                  .map((p) => p.attention)
+                                  .toList(),
+                              sparkColor: const Color(0xFF22d3ee))),
+                    ]),
+                    const SizedBox(height: 16),
+                    Row(children: [
+                      Expanded(
+                          child: _KpiCard(
+                              title: 'CRITICAL EVENTS',
+                              value:
+                                  '${_eventLog.where((e) => e.severity >= 4).length}',
+                              subtitle: snap.alert ?? 'None',
+                              icon: Icons.warning_amber_outlined,
+                              accent: AppColors.alertRed,
+                              isAlert: snap.alert != null)),
+                      const SizedBox(width: 16),
+                      Expanded(
+                          child: _KpiCard(
+                              title: 'BLINK RATE',
+                              value:
+                                  '${snap.blinksPerMin.toStringAsFixed(0)}/min',
+                              subtitle: 'Normal',
+                              icon: Icons.remove_red_eye_outlined,
+                              accent: AppColors.focusedGreen)),
+                    ]),
+                  ]);
+                }
+                return Row(children: [
+                  Expanded(
+                      child: _KpiCard(
+                          title: 'TRIP DURATION',
+                          value: '${mins}m ${secs}s',
+                          subtitle: snap.tripActive ? 'Ongoing' : 'Stopped',
+                          icon: Icons.timer_outlined,
+                          accent: AppColors.focusedGreen,
+                          sparkData:
+                              _telemetryBuffer.map((p) => p.attention).toList(),
+                          sparkColor: AppColors.focusedGreen)),
+                  const SizedBox(width: 16),
+                  Expanded(
+                      child: _KpiCard(
+                          title: 'AVG ATTENTION',
+                          value: '${snap.attention.toStringAsFixed(0)}/100',
+                          subtitle: snap.focused ? 'Focused' : 'Degrading',
+                          icon: Icons.visibility_outlined,
+                          accent: const Color(0xFF22d3ee),
+                          sparkData:
+                              _telemetryBuffer.map((p) => p.attention).toList(),
+                          sparkColor: const Color(0xFF22d3ee))),
+                  const SizedBox(width: 16),
+                  Expanded(
+                      child: _KpiCard(
+                          title: 'CRITICAL EVENTS',
+                          value:
+                              '${_eventLog.where((e) => e.severity >= 4).length}',
+                          subtitle: snap.alert ?? 'None',
+                          icon: Icons.warning_amber_outlined,
+                          accent: AppColors.alertRed,
+                          isAlert: snap.alert != null)),
+                  const SizedBox(width: 16),
+                  Expanded(
+                      child: _KpiCard(
+                          title: 'BLINK RATE',
+                          value: '${snap.blinksPerMin.toStringAsFixed(0)}/min',
+                          subtitle: 'Normal',
+                          icon: Icons.remove_red_eye_outlined,
+                          accent: AppColors.focusedGreen)),
+                ]);
+              }),
               const SizedBox(height: 24),
               // Chart
-              Card(child: Padding(
+              Card(
+                  child: Padding(
                 padding: const EdgeInsets.all(24),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                    const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text('Session Telemetry', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
-                      SizedBox(height: 4),
-                      Text('Attention Score vs PERCLOS (live)', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Wrap(
+                          alignment: WrapAlignment.spaceBetween,
+                          spacing: 24,
+                          runSpacing: 12,
+                          children: [
+                            const Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('Session Telemetry',
+                                      style: TextStyle(
+                                          fontSize: 20,
+                                          fontWeight: FontWeight.w600,
+                                          color: AppColors.textPrimary)),
+                                  SizedBox(height: 4),
+                                  Text('Attention Score vs PERCLOS (live)',
+                                      style: TextStyle(
+                                          fontSize: 12,
+                                          color: AppColors.textSecondary)),
+                                ]),
+                            Row(mainAxisSize: MainAxisSize.min, children: [
+                              _legendDot(AppColors.focusedGreen, 'Attention'),
+                              const SizedBox(width: 16),
+                              _legendDot(AppColors.alertRed, 'PERCLOS'),
+                            ]),
+                          ]),
+                      const SizedBox(height: 24),
+                      SizedBox(
+                        height: 240,
+                        child: _telemetryBuffer.isEmpty
+                            ? _ChartEmptyState()
+                            : _TelemetryChart(data: _telemetryBuffer),
+                      ),
                     ]),
-                    Row(children: [
-                      _legendDot(AppColors.focusedGreen, 'Attention'),
-                      const SizedBox(width: 16),
-                      _legendDot(AppColors.alertRed, 'PERCLOS'),
-                    ]),
-                  ]),
-                  const SizedBox(height: 24),
-                  SizedBox(
-                    height: 240,
-                    child: _telemetryBuffer.isEmpty
-                        ? _ChartEmptyState()
-                        : _TelemetryChart(data: _telemetryBuffer),
-                  ),
-                ]),
               )),
               const SizedBox(height: 24),
               // Event Log
-              Card(child: Padding(
+              Card(
+                  child: Padding(
                 padding: const EdgeInsets.all(24),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                    const Text('Event Log', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
-                    Row(children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        decoration: BoxDecoration(color: AppColors.surface2, borderRadius: BorderRadius.circular(8), border: Border.all(color: const Color(0x33444748))),
-                        child: DropdownButtonHideUnderline(
-                          child: DropdownButton<String>(
-                            value: _filterLevel,
-                            isDense: true,
-                            dropdownColor: AppColors.surface1,
-                            style: const TextStyle(fontSize: 13, color: AppColors.textSecondary),
-                            items: ['All', 'Critical', 'Warning'].map((l) => DropdownMenuItem(value: l, child: Text(l))).toList(),
-                            onChanged: (v) => setState(() => _filterLevel = v ?? 'All'),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      _LogButton(icon: Icons.download, label: 'Export CSV', onTap: _exportCsv),
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Wrap(
+                          alignment: WrapAlignment.spaceBetween,
+                          spacing: 24,
+                          runSpacing: 12,
+                          children: [
+                            const Text('Event Log',
+                                style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppColors.textPrimary)),
+                            Row(mainAxisSize: MainAxisSize.min, children: [
+                              Container(
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 12),
+                                decoration: BoxDecoration(
+                                    color: AppColors.surface2,
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(
+                                        color: const Color(0x33444748))),
+                                child: DropdownButtonHideUnderline(
+                                  child: DropdownButton<String>(
+                                    value: _filterLevel,
+                                    isDense: true,
+                                    isExpanded: false,
+                                    dropdownColor: AppColors.surface1,
+                                    style: const TextStyle(
+                                        fontSize: 13,
+                                        color: AppColors.textSecondary),
+                                    items: ['All', 'Critical', 'Warning']
+                                        .map((l) => DropdownMenuItem(
+                                            value: l, child: Text(l)))
+                                        .toList(),
+                                    onChanged: (v) => setState(
+                                        () => _filterLevel = v ?? 'All'),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              _LogButton(
+                                  icon: Icons.download,
+                                  label: 'Export CSV',
+                                  onTap: _exportCsv),
+                            ]),
+                          ]),
+                      const SizedBox(height: 16),
+                      const Divider(color: Color(0x33444748)),
+                      if (_filteredLog.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 24),
+                          child: Center(
+                              child: Text('No events recorded',
+                                  style: TextStyle(
+                                      color: AppColors.textMuted,
+                                      fontSize: 13))),
+                        )
+                      else
+                        ..._filteredLog.map((e) => _EventRow(
+                              time: DateFormat('HH:mm:ss').format(e.time),
+                              type: e.type,
+                              severity: e.severity,
+                            )),
                     ]),
-                  ]),
-                  const SizedBox(height: 16),
-                  const Divider(color: Color(0x33444748)),
-                  if (_filteredLog.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 24),
-                      child: Center(child: Text('No events recorded', style: TextStyle(color: AppColors.textMuted, fontSize: 13))),
-                    )
-                  else
-                    ..._filteredLog.map((e) => _EventRow(
-                      time: DateFormat('HH:mm:ss').format(e.time),
-                      type: e.type,
-                      severity: e.severity,
-                    )),
-                ]),
               )),
             ],
           ),
         );
-      },
+      }),
     );
   }
 
@@ -196,7 +324,7 @@ class _TripAnalyticsScreenState extends State<TripAnalyticsScreen> {
     final rows = <String>[
       'Time,Attention,PERCLOS',
       ..._telemetryBuffer.map((p) =>
-        '${DateFormat('HH:mm:ss').format(p.time)},${p.attention.toStringAsFixed(2)},${p.perclos.toStringAsFixed(4)}'),
+          '${DateFormat('HH:mm:ss').format(p.time)},${p.attention.toStringAsFixed(2)},${p.perclos.toStringAsFixed(4)}'),
     ];
     final csv = rows.join('\n');
     await Clipboard.setData(ClipboardData(text: csv));
@@ -211,9 +339,13 @@ class _TripAnalyticsScreenState extends State<TripAnalyticsScreen> {
 
   Widget _legendDot(Color color, String label) {
     return Row(mainAxisSize: MainAxisSize.min, children: [
-      Container(width: 10, height: 10, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+      Container(
+          width: 10,
+          height: 10,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
       const SizedBox(width: 6),
-      Text(label, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+      Text(label,
+          style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
     ]);
   }
 }
@@ -236,43 +368,69 @@ class _TelemetryChart extends StatelessWidget {
     return LineChart(
       LineChartData(
         gridData: FlGridData(
-          show: true, drawVerticalLine: false, horizontalInterval: 25,
-          getDrawingHorizontalLine: (v) => FlLine(color: AppColors.textMuted.withValues(alpha:0.15), strokeWidth: 1),
+          show: true,
+          drawVerticalLine: false,
+          horizontalInterval: 25,
+          getDrawingHorizontalLine: (v) => FlLine(
+              color: AppColors.textMuted.withValues(alpha: 0.15),
+              strokeWidth: 1),
         ),
         titlesData: const FlTitlesData(show: false),
         borderData: FlBorderData(show: false),
         lineTouchData: LineTouchData(
           touchTooltipData: LineTouchTooltipData(
             getTooltipColor: (_) => AppColors.surface1,
-            getTooltipItems: (spots) => spots.map((s) => LineTooltipItem(
-              '${s.y.toStringAsFixed(1)}',
-              TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: s.bar.color),
-            )).toList(),
+            getTooltipItems: (spots) => spots
+                .map((s) => LineTooltipItem(
+                      '${s.y.toStringAsFixed(1)}',
+                      TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: s.bar.color),
+                    ))
+                .toList(),
           ),
         ),
-        minY: 0, maxY: 105,
+        minY: 0,
+        maxY: 105,
         lineBarsData: [
           LineChartBarData(
-            spots: attentionSpots, isCurved: true, curveSmoothness: 0.3,
-            color: AppColors.focusedGreen, barWidth: 2, isStrokeCapRound: true,
+            spots: attentionSpots,
+            isCurved: true,
+            curveSmoothness: 0.3,
+            color: AppColors.focusedGreen,
+            barWidth: 2,
+            isStrokeCapRound: true,
             dotData: const FlDotData(show: false),
             belowBarData: BarAreaData(
               show: true,
               gradient: LinearGradient(
-                begin: Alignment.topCenter, end: Alignment.bottomCenter,
-                colors: [AppColors.focusedGreen.withValues(alpha:0.2), AppColors.focusedGreen.withValues(alpha:0)],
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  AppColors.focusedGreen.withValues(alpha: 0.2),
+                  AppColors.focusedGreen.withValues(alpha: 0)
+                ],
               ),
             ),
           ),
           LineChartBarData(
-            spots: perclosSpots, isCurved: true, curveSmoothness: 0.3,
-            color: AppColors.alertRed, barWidth: 2, isStrokeCapRound: true,
+            spots: perclosSpots,
+            isCurved: true,
+            curveSmoothness: 0.3,
+            color: AppColors.alertRed,
+            barWidth: 2,
+            isStrokeCapRound: true,
             dotData: const FlDotData(show: false),
             belowBarData: BarAreaData(
               show: true,
               gradient: LinearGradient(
-                begin: Alignment.topCenter, end: Alignment.bottomCenter,
-                colors: [AppColors.alertRed.withValues(alpha:0.15), AppColors.alertRed.withValues(alpha:0)],
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  AppColors.alertRed.withValues(alpha: 0.15),
+                  AppColors.alertRed.withValues(alpha: 0)
+                ],
               ),
             ),
           ),
@@ -288,7 +446,8 @@ class _TelemetryPoint {
   final DateTime time;
   final double attention;
   final double perclos;
-  _TelemetryPoint({required this.time, required this.attention, required this.perclos});
+  _TelemetryPoint(
+      {required this.time, required this.attention, required this.perclos});
 }
 
 class _LogEntry {
@@ -302,9 +461,14 @@ class _LogEntry {
 
 class _KpiCard extends StatelessWidget {
   const _KpiCard({
-    required this.title, required this.value, required this.subtitle,
-    required this.icon, required this.accent,
-    this.isAlert = false, this.sparkData, this.sparkColor,
+    required this.title,
+    required this.value,
+    required this.subtitle,
+    required this.icon,
+    required this.accent,
+    this.isAlert = false,
+    this.sparkData,
+    this.sparkColor,
   });
   final String title, value, subtitle;
   final IconData icon;
@@ -326,11 +490,20 @@ class _KpiCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            Text(title, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 1, color: AppColors.textSecondary)),
+            Text(title,
+                style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1,
+                    color: AppColors.textSecondary)),
             Icon(icon, size: 16, color: AppColors.textSecondary),
           ]),
           const SizedBox(height: 8),
-          Text(value, style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700, color: isAlert ? AppColors.alertRed : AppColors.textPrimary)),
+          Text(value,
+              style: TextStyle(
+                  fontSize: 28,
+                  fontWeight: FontWeight.w700,
+                  color: isAlert ? AppColors.alertRed : AppColors.textPrimary)),
           Text(subtitle, style: TextStyle(fontSize: 12, color: accent)),
           // Mini sparkline
           if (sparkData != null && sparkData!.length > 2)
@@ -340,7 +513,8 @@ class _KpiCard extends StatelessWidget {
                 height: 24,
                 child: CustomPaint(
                   size: Size.infinite,
-                  painter: _SparklinePainter(data: sparkData!, color: sparkColor ?? accent),
+                  painter: _SparklinePainter(
+                      data: sparkData!, color: sparkColor ?? accent),
                 ),
               ),
             ),
@@ -359,7 +533,8 @@ class _SparklinePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     if (data.length < 2) return;
-    final maxVal = data.reduce((a, b) => a > b ? a : b).clamp(1.0, double.infinity);
+    final maxVal =
+        data.reduce((a, b) => a > b ? a : b).clamp(1.0, double.infinity);
     final minVal = data.reduce((a, b) => a < b ? a : b);
     final range = (maxVal - minVal).clamp(0.001, double.infinity);
 
@@ -382,23 +557,29 @@ class _SparklinePainter extends CustomPainter {
     fillPath.close();
 
     // Fill gradient
-    canvas.drawPath(fillPath, Paint()
-      ..shader = LinearGradient(
-        begin: Alignment.topCenter, end: Alignment.bottomCenter,
-        colors: [color.withValues(alpha:0.15), color.withValues(alpha:0)],
-      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height)));
+    canvas.drawPath(
+        fillPath,
+        Paint()
+          ..shader = LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [color.withValues(alpha: 0.15), color.withValues(alpha: 0)],
+          ).createShader(Rect.fromLTWH(0, 0, size.width, size.height)));
 
     // Stroke
-    canvas.drawPath(path, Paint()
-      ..color = color.withValues(alpha:0.7)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round);
+    canvas.drawPath(
+        path,
+        Paint()
+          ..color = color.withValues(alpha: 0.7)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round);
   }
 
   @override
-  bool shouldRepaint(_SparklinePainter old) => !identical(old.data, data) || old.color != color;
+  bool shouldRepaint(_SparklinePainter old) =>
+      !identical(old.data, data) || old.color != color;
 }
 
 // ─── Log Button ─────────────────────────────────────────────────────────────
@@ -411,45 +592,66 @@ class _LogButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(color: Colors.transparent, child: InkWell(
-      borderRadius: BorderRadius.circular(8), onTap: onTap,
-      child: Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Icon(icon, size: 16, color: AppColors.textSecondary),
-          const SizedBox(width: 4),
-          Text(label, style: const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
-        ])),
-    ));
+    return Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: onTap,
+          child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(icon, size: 16, color: AppColors.textSecondary),
+                const SizedBox(width: 4),
+                Text(label,
+                    style: const TextStyle(
+                        fontSize: 13, color: AppColors.textSecondary)),
+              ])),
+        ));
   }
 }
 
 // ─── Event Row ──────────────────────────────────────────────────────────────
 
 class _EventRow extends StatelessWidget {
-  const _EventRow({required this.time, required this.type, required this.severity});
+  const _EventRow(
+      {required this.time, required this.type, required this.severity});
   final String time, type;
   final int severity;
 
   @override
   Widget build(BuildContext context) {
     final color = AppColors.severity(severity);
-    final label = severity >= 4 ? 'Critical' : severity >= 2 ? 'Warning' : 'Info';
+    final label = severity >= 4
+        ? 'Critical'
+        : severity >= 2
+            ? 'Warning'
+            : 'Info';
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 12),
       child: Row(children: [
-        Text(time, style: const TextStyle(fontSize: 13, fontFamily: 'monospace', color: AppColors.textSecondary)),
+        Text(time,
+            style: const TextStyle(
+                fontSize: 13,
+                fontFamily: 'monospace',
+                color: AppColors.textSecondary)),
         const SizedBox(width: 24),
-        Expanded(child: Text(type, style: TextStyle(fontSize: 14, color: color, fontWeight: FontWeight.w500))),
+        Expanded(
+            child: Text(type,
+                style: TextStyle(
+                    fontSize: 14, color: color, fontWeight: FontWeight.w500))),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-          decoration: BoxDecoration(color: color.withValues(alpha:0.1), borderRadius: BorderRadius.circular(6)),
-          child: Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: color)),
+          decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(6)),
+          child: Text(label,
+              style: TextStyle(
+                  fontSize: 11, fontWeight: FontWeight.w600, color: color)),
         ),
       ]),
     );
   }
 }
-
 
 // ─── Chart Empty State ─────────────────────────────────────────────────────
 
@@ -459,21 +661,28 @@ class _ChartEmptyState extends StatelessWidget {
     return Center(
       child: Column(mainAxisSize: MainAxisSize.min, children: [
         Container(
-          width: 64, height: 64,
+          width: 64,
+          height: 64,
           decoration: BoxDecoration(
             color: AppColors.surface2,
             shape: BoxShape.circle,
             border: Border.all(color: const Color(0x22444748)),
           ),
-          child: const Icon(Icons.show_chart, size: 32, color: AppColors.textMuted),
+          child: const Icon(Icons.show_chart,
+              size: 32, color: AppColors.textMuted),
         ),
         const SizedBox(height: 16),
         const Text('No telemetry data yet',
-          style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: AppColors.textSecondary)),
+            style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+                color: AppColors.textSecondary)),
         const SizedBox(height: 6),
-        Text('Attention and PERCLOS will appear here\nas the session progresses.',
-          textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 12, color: AppColors.textMuted, height: 1.5)),
+        Text(
+            'Attention and PERCLOS will appear here\nas the session progresses.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+                fontSize: 12, color: AppColors.textMuted, height: 1.5)),
       ]),
     );
   }

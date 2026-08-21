@@ -10,9 +10,20 @@ class SessionLogger:
     def __init__(self, path: str, session_id: str | None = None):
         d = os.path.dirname(path)
         if d:
-            os.makedirs(d, exist_ok=True)
+            try:
+                os.makedirs(d, exist_ok=True)
+            except OSError:
+                pass
         self._lock = threading.Lock()
-        self._f = open(path, "a", encoding="utf-8")
+        self._closed = False
+        try:
+            self._f = open(path, "a", encoding="utf-8")
+        except OSError as exc:
+            # Fall back to in-memory no-op if disk is full / permission denied.
+            print(f"[session_log] failed to open {path}: {exc}")
+            import io
+            self._f = io.StringIO()
+            self._closed = False
         self.session_id = session_id
 
     def set_session_id(self, session_id: str | None) -> None:
@@ -33,8 +44,13 @@ class SessionLogger:
         if self.session_id:
             event["session_id"] = self.session_id
         with self._lock:
-            self._f.write(json.dumps(event) + "\n")
-            self._f.flush()
+            if self._closed:
+                return
+            try:
+                self._f.write(json.dumps(event) + "\n")
+                self._f.flush()
+            except OSError as exc:
+                print(f"[session_log] write failed: {exc}")
 
     def frame_sample(self, attention: float, perclos: float, ema_drowsy: float,
                      pitch: float, yaw: float, roll: float, pose_valid: bool,
@@ -59,4 +75,10 @@ class SessionLogger:
 
     def close(self) -> None:
         with self._lock:
-            self._f.close()
+            if self._closed:
+                return
+            try:
+                self._f.close()
+            except Exception:
+                pass
+            self._closed = True

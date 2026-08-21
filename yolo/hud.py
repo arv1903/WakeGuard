@@ -43,13 +43,21 @@ _FONT_NAMES = [
 ]
 
 
+_font_cache: dict[int, ImageFont.FreeTypeFont | ImageFont.ImageFont] = {}
+
 def _font(size):
+    if size in _font_cache:
+        return _font_cache[size]
     for name in _FONT_NAMES:
         try:
-            return ImageFont.truetype(name, size)
+            f = ImageFont.truetype(name, size)
+            _font_cache[size] = f
+            return f
         except OSError:
             pass
-    return ImageFont.load_default()
+    f = ImageFont.load_default()
+    _font_cache[size] = f
+    return f
 
 
 # Static panel (rounded translucent sidebar + title), cached per size.
@@ -57,7 +65,7 @@ _panel_cache = {}
 
 
 def _static_panel(w, h, panel_w):
-    key = (w, h)
+    key = (w, h, panel_w)
     if key not in _panel_cache:
         layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         d = ImageDraw.Draw(layer)
@@ -65,6 +73,9 @@ def _static_panel(w, h, panel_w):
                             fill=(18, 18, 24, 220))
         d.text((w - panel_w + 16, 16), "ATTENTION", font=_font(18),
                fill=(200, 200, 210, 255))
+        # Cap cache size to avoid unbounded growth on resolution changes.
+        if len(_panel_cache) > 8:
+            _panel_cache.clear()
         _panel_cache[key] = layer
     return _panel_cache[key]
 
@@ -201,7 +212,14 @@ def RenderHud(frame: np.ndarray, state: HudState) -> np.ndarray:
                   width=5)
 
     if config.NightMode:
-        overlay = Image.eval(overlay, lambda v: v // 2)
+        # Dim only RGB channels, preserve alpha (previous Image.eval(v//2)
+        # halved alpha too, washing HUD into ghostly transparency).
+        r, g, b, a = overlay.split()
+        # Blend overlay RGB toward black by 50% (night dimming)
+        r = r.point(lambda v: v // 2)
+        g = g.point(lambda v: v // 2)
+        b = b.point(lambda v: v // 2)
+        overlay = Image.merge("RGBA", (r, g, b, a))
 
     img = Image.alpha_composite(img, overlay)
     return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)

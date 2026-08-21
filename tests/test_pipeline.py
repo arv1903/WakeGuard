@@ -154,3 +154,24 @@ def test_infer_accepts_wrapper_landmarks():
     assert r.head_pose["valid"] is True
     assert r.ear is not None
 
+
+def test_pose_rgb_buffer_is_reused_for_same_resolution():
+    cam = FakeCamera()
+    inf = InferenceThread(cam, FakeModel(), None, pose_every_n=1, yolo_every_n=10**9)
+    inf._landmarker = _fake_landmarker_result([_realistic_face_landmarks()])
+    frame = cam.latest_frame()
+    inf._infer(frame)
+    first_pointer = inf._rgb_buffer.__array_interface__["data"][0]
+    inf._infer(frame)
+    assert inf._rgb_buffer.__array_interface__["data"][0] == first_pointer
+    assert inf._rgb_buffer.flags.c_contiguous
+
+
+def test_pose_rgb_buffer_reallocates_for_new_resolution():
+    cam = FakeCamera()
+    inf = InferenceThread(cam, FakeModel(), None, pose_every_n=1, yolo_every_n=10**9)
+    inf._landmarker = _fake_landmarker_result([_realistic_face_landmarks()])
+    inf._infer(np.zeros((20, 30, 3), dtype=np.uint8))
+    inf._infer(np.zeros((40, 50, 3), dtype=np.uint8))
+    assert inf._rgb_buffer.shape == (40, 50, 3)
+

@@ -11,6 +11,7 @@ import numpy as np
 from .config import (
     LandmarkIndices,
     FaceModelPoints,
+    focal_length,
 )
 
 
@@ -38,15 +39,22 @@ def ComputeHeadPose(LandmarkerResult, FrameShape):
         return empty
 
     h, w = FrameShape[:2]
-    face_lms = LandmarkerResult.face_landmarks[0]
+    raw_face = LandmarkerResult.face_landmarks[0]
+    # Normalize both MediaPipe shapes: <1.0 NormalizedLandmarkList wrapper
+    # exposing .landmark, and 1.0+ plain list. Reuse same logic as
+    # pipeline._normalized_landmarks so head_pose never crashes on wrapper.
+    face_lms = raw_face.landmark if hasattr(raw_face, "landmark") else raw_face
 
     # Project landmark coordinates into pixel space
-    img_pts = np.array(
-        [[face_lms[i].x * w, face_lms[i].y * h] for i in LandmarkIndices],
-        dtype=np.float64,
-    )
+    try:
+        img_pts = np.array(
+            [[face_lms[i].x * w, face_lms[i].y * h] for i in LandmarkIndices],
+            dtype=np.float64,
+        )
+    except (AttributeError, IndexError, TypeError):
+        return empty
 
-    focal = w * 1.05
+    focal = focal_length(w)
     cam_matrix = np.array(
         [[focal, 0, w / 2.0], [0, focal, h / 2.0], [0, 0, 1]],
         dtype=np.float64,

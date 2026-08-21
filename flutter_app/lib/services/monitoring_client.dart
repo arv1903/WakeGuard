@@ -27,13 +27,15 @@ class _SnapshotSmoother {
   bool _initialised = false;
 
   // Per-field alpha: higher = more responsive, lower = smoother.
-  static const _aAttention = 0.35;
-  static const _aPerclos   = 0.30;
-  static const _aDrowsy    = 0.30;
-  static const _aBlinks    = 0.20;
-  static const _aPose      = 0.35;
+  // Reduced double-smoothing lag: backend already smooths at 0.85 per frame,
+  // so client uses higher alpha (more responsive) to avoid 6-8 frame lag.
+  static const _aAttention = 0.55;
+  static const _aPerclos = 0.50;
+  static const _aDrowsy = 0.50;
+  static const _aBlinks = 0.40;
+  static const _aPose = 0.55;
   // Severity EMA — needs to cross hysteresis thresholds to change status.
-  static const _aSeverity  = 0.25;
+  static const _aSeverity = 0.35;
 
   double _ema(double prev, double raw, double alpha) =>
       alpha * raw + (1 - alpha) * prev;
@@ -42,31 +44,38 @@ class _SnapshotSmoother {
   MonitoringSnapshot smooth(MonitoringSnapshot raw) {
     if (!_initialised) {
       _attention = raw.attention;
-      _perclos   = raw.perclos;
-      _drowsy    = raw.emaDrowsy;
-      _blinks    = raw.blinksPerMin;
-      _pitch     = raw.pitch;
-      _yaw       = raw.yaw;
-      _roll      = raw.roll;
+      _perclos = raw.perclos;
+      _drowsy = raw.emaDrowsy;
+      _blinks = raw.blinksPerMin;
+      _pitch = raw.pitch;
+      _yaw = raw.yaw;
+      _roll = raw.roll;
       _smoothedSeverity = raw.alertSeverity;
-      _displayedStatus  = raw.status;
+      _displayedStatus = raw.status;
       _initialised = true;
       return raw;
     }
 
     _attention = _ema(_attention, raw.attention, _aAttention);
-    _perclos   = _ema(_perclos,   raw.perclos,   _aPerclos);
-    _drowsy    = _ema(_drowsy,    raw.emaDrowsy,  _aDrowsy);
-    _blinks    = _ema(_blinks,    raw.blinksPerMin, _aBlinks);
-    _pitch     = _ema(_pitch,     raw.pitch,     _aPose);
-    _yaw       = _ema(_yaw,       raw.yaw,       _aPose);
-    _roll      = _ema(_roll,      raw.roll,      _aPose);
+    _perclos = _ema(_perclos, raw.perclos, _aPerclos);
+    _drowsy = _ema(_drowsy, raw.emaDrowsy, _aDrowsy);
+    _blinks = _ema(_blinks, raw.blinksPerMin, _aBlinks);
+    _pitch = _ema(_pitch, raw.pitch, _aPose);
+    _yaw = _ema(_yaw, raw.yaw, _aPose);
+    _roll = _ema(_roll, raw.roll, _aPose);
 
     // Status hysteresis — smoothed severity must cross thresholds to change
     // the displayed text, preventing rapid flicker while alerting immediately
     // on critical events.
-    _smoothedSeverity = _ema(_smoothedSeverity.toDouble(), raw.alertSeverity.toDouble(), _aSeverity).round();
-    final newStatus = _statusFromSeverity(_smoothedSeverity, raw);
+    _smoothedSeverity = raw.alertSeverity >= 3
+        ? raw.alertSeverity
+        : _ema(_smoothedSeverity.toDouble(), raw.alertSeverity.toDouble(),
+                _aSeverity)
+            .round();
+    final newStatus = _statusFromSeverity(
+      raw.alertSeverity >= 3 ? raw.alertSeverity : _smoothedSeverity,
+      raw,
+    );
     if (newStatus != _displayedStatus) {
       if (raw.alertSeverity >= 3 || _smoothedSeverity >= 3) {
         _displayedStatus = newStatus;
@@ -84,35 +93,39 @@ class _SnapshotSmoother {
 
     return MonitoringSnapshot(
       schemaVersion: raw.schemaVersion,
-      sequence:     raw.sequence,
-      serverId:     raw.serverId,
-      timestamp:    raw.timestamp,
-      sessionId:    raw.sessionId,
+      sequence: raw.sequence,
+      serverId: raw.serverId,
+      timestamp: raw.timestamp,
+      sessionId: raw.sessionId,
       tripStartedAt: raw.tripStartedAt,
-      tripActive:   raw.tripActive,
-      attention:    _attention,
-      perclos:      _perclos,
-      emaDrowsy:    _drowsy,
-      ear:          raw.ear,
-      eyesClosed:   raw.eyesClosed,
-      microsleep:   raw.microsleep,
+      tripActive: raw.tripActive,
+      attention: _attention,
+      perclos: _perclos,
+      emaDrowsy: _drowsy,
+      ear: raw.ear,
+      eyesClosed: raw.eyesClosed,
+      microsleep: raw.microsleep,
       blinksPerMin: _blinks,
-      pitch:        _pitch,
-      yaw:          _yaw,
-      roll:         _roll,
-      poseValid:    raw.poseValid,
-      faceFound:    raw.faceFound,
-      faceLost:     raw.faceLost,
+      pitch: _pitch,
+      yaw: _yaw,
+      roll: _roll,
+      poseValid: raw.poseValid,
+      faceFound: raw.faceFound,
+      faceLost: raw.faceLost,
       faceLostProgress: raw.faceLostProgress,
-      headDown:     raw.headDown,
-      lookingAway:  raw.lookingAway,
-      headTilt:     raw.headTilt,
-      focused:      raw.focused,
-      unfocused:    raw.unfocused,
-      alert:        raw.alert,
+      headDown: raw.headDown,
+      lookingAway: raw.lookingAway,
+      headTilt: raw.headTilt,
+      focused: raw.focused,
+      unfocused: raw.unfocused,
+      alert: raw.alert,
       alertSeverity: raw.alertSeverity,
-      alarmMuted:   raw.alarmMuted,
-      fps:          raw.fps,
+      alarmMuted: raw.alarmMuted,
+      fps: raw.fps,
+      calibrationState: raw.calibrationState,
+      calibrationProgress: raw.calibrationProgress,
+      calibrationError: raw.calibrationError,
+      calibrationValidSamples: raw.calibrationValidSamples,
     );
   }
 
@@ -155,7 +168,8 @@ class MonitoringClient extends ChangeNotifier {
   int _generation = 0;
   bool _disposed = false;
 
-  final ValueNotifier<Uint8List?> _latestFrameBytes = ValueNotifier<Uint8List?>(null);
+  final ValueNotifier<Uint8List?> _latestFrameBytes =
+      ValueNotifier<Uint8List?>(null);
   final _SnapshotSmoother _smoother = _SnapshotSmoother();
 
   String get baseUrl => _baseUrl;
@@ -165,8 +179,11 @@ class MonitoringClient extends ChangeNotifier {
   /// never falls behind the camera.
   ValueListenable<Uint8List?> get latestFrameBytes => _latestFrameBytes;
 
-  bool get isStale => lastUpdate == null ||
-      DateTime.now().difference(lastUpdate!).inSeconds > 3;
+  // SSE waits 25s for next event; marking stale at 3s is a UX lie.
+  // Consider stale only after 30s (25 + buffer) to avoid flicker during normal waits.
+  bool get isStale =>
+      lastUpdate == null ||
+      DateTime.now().difference(lastUpdate!).inSeconds > 30;
 
   /// Smoothed status label — debounced to prevent flicker.
   String get displayedStatus => _smoother.displayedStatus;
@@ -180,7 +197,8 @@ class MonitoringClient extends ChangeNotifier {
   }
 
   Map<String, String> _headers() => {
-        if (token != null && token!.isNotEmpty) 'Authorization': 'Bearer $token',
+        if (token != null && token!.isNotEmpty)
+          'Authorization': 'Bearer $token',
       };
 
   void configure({required String baseUrl, String? token}) {
@@ -194,6 +212,7 @@ class MonitoringClient extends ChangeNotifier {
 
   void connect() {
     final generation = ++_generation;
+    _resetMjpegState();
     connectionState = BackendConnectionState.connecting;
     errorMessage = null;
     notifyListeners();
@@ -205,6 +224,7 @@ class MonitoringClient extends ChangeNotifier {
     _generation++;
     connectionState = BackendConnectionState.disconnected;
     _latestFrameBytes.value = null;
+    _resetMjpegState();
     _smoother.reset();
     notifyListeners();
   }
@@ -233,7 +253,8 @@ class MonitoringClient extends ChangeNotifier {
         final contentType = response.headers.contentType?.toString() ?? '';
         final boundary = _mjpegBoundary(contentType);
         if (boundary == null) {
-          throw const HttpException('Video stream is missing its MJPEG boundary');
+          throw const HttpException(
+              'Video stream is missing its MJPEG boundary');
         }
         final separator = utf8.encode('--$boundary');
 
@@ -262,26 +283,37 @@ class MonitoringClient extends ChangeNotifier {
     final marker = 'boundary=';
     final index = lower.indexOf(marker);
     if (index < 0) return null;
-    return contentType.substring(index + marker.length).trim();
+    var boundary = contentType.substring(index + marker.length).trim();
+    final semicolon = boundary.indexOf(';');
+    if (semicolon >= 0) boundary = boundary.substring(0, semicolon).trim();
+    if (boundary.length >= 2 &&
+        ((boundary.startsWith('"') && boundary.endsWith('"')) ||
+            (boundary.startsWith("'") && boundary.endsWith("'")))) {
+      boundary = boundary.substring(1, boundary.length - 1);
+    }
+    return boundary.isEmpty ? null : boundary;
   }
 
   final BytesBuilder _mjpegBuffer = BytesBuilder(copy: false);
 
+  void _resetMjpegState() => _mjpegBuffer.clear();
+
   /// Splits the multipart stream into per-frame JPEG payloads. Frame bodies
   /// carry an explicit Content-Length, so partial frames are buffered and
   /// only complete frames are published.
+  /// Optimized to avoid extra copies: uses takeBytes() and sublistView.
   void _feedMjpegBytes(List<int> chunk, List<int> separator) {
     _mjpegBuffer.add(chunk);
-    final bytes = _mjpegBuffer.toBytes();
-    _mjpegBuffer.clear();
+    final bytes = _mjpegBuffer.takeBytes();
 
     final separatorBytes = separator;
     var cursor = 0;
-    List<int>? lastFrame;
+    Uint8List? lastFrame;
     while (true) {
       final start = _indexOf(bytes, separatorBytes, cursor);
       if (start < 0) break;
-      final headerEnd = _indexOf(bytes, _crlfCrlf, start + separatorBytes.length);
+      final headerEnd =
+          _indexOf(bytes, _crlfCrlf, start + separatorBytes.length);
       if (headerEnd < 0) break;
       final headerText = utf8.decode(
         bytes.sublist(start + separatorBytes.length, headerEnd),
@@ -292,16 +324,19 @@ class MonitoringClient extends ChangeNotifier {
       final bodyStart = headerEnd + 4;
       final bodyEnd = bodyStart + length;
       if (bodyEnd > bytes.length) break;
-      // Only keep the last complete frame from this chunk — intermediate
-      // frames are stale by the time the viewer decodes them.
-      lastFrame = bytes.sublist(bodyStart, bodyEnd);
+      // Only keep the last complete frame — use view without extra copy
+      lastFrame = Uint8List.sublistView(bytes, bodyStart, bodyEnd);
       cursor = bodyEnd;
     }
     if (lastFrame != null) {
+      // Copy only the final frame for the ValueNotifier (must own its buffer)
       _latestFrameBytes.value = Uint8List.fromList(lastFrame);
     }
     if (cursor > 0 && cursor < bytes.length) {
-      _mjpegBuffer.add(bytes.sublist(cursor));
+      _mjpegBuffer.add(Uint8List.sublistView(bytes, cursor));
+    } else if (cursor == 0) {
+      // No complete frame found — re-buffer everything
+      _mjpegBuffer.add(bytes);
     }
   }
 
@@ -366,9 +401,8 @@ class MonitoringClient extends ChangeNotifier {
     notifyListeners();
     String? dataLine;
     MonitoringSnapshot? result;
-    await for (final line in response
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())) {
+    await for (final line
+        in response.transform(utf8.decoder).transform(const LineSplitter())) {
       if (line.startsWith('data: ')) {
         dataLine = line.substring(6);
       } else if (line.isEmpty && dataLine != null) {
@@ -383,8 +417,8 @@ class MonitoringClient extends ChangeNotifier {
   }
 
   void _apply(MonitoringSnapshot next) {
-    final newServer = next.serverId.isNotEmpty &&
-        next.serverId != snapshot.serverId;
+    final newServer =
+        next.serverId.isNotEmpty && next.serverId != snapshot.serverId;
     if (!newServer && next.sequence <= snapshot.sequence) return;
     if (newServer) _smoother.reset();
     snapshot = _smoother.smooth(next);
@@ -399,7 +433,8 @@ class MonitoringClient extends ChangeNotifier {
     final response = await request.close();
     final body = await response.transform(utf8.decoder).join();
     if (response.statusCode != HttpStatus.ok) {
-      throw HttpException('Pairing code unavailable (${response.statusCode}): $body');
+      throw HttpException(
+          'Pairing code unavailable (${response.statusCode}): $body');
     }
     return jsonDecode(body) as Map<String, dynamic>;
   }
@@ -418,7 +453,8 @@ class MonitoringClient extends ChangeNotifier {
     final result = jsonDecode(body) as Map<String, dynamic>;
     final issuedToken = result['access_token'];
     if (issuedToken is! String || issuedToken.isEmpty) {
-      throw const FormatException('Pairing response did not contain an access token');
+      throw const FormatException(
+          'Pairing response did not contain an access token');
     }
     token = issuedToken;
     snapshot = MonitoringSnapshot.initial();
@@ -476,7 +512,8 @@ class MonitoringClient extends ChangeNotifier {
       final response = await request.close();
       if (response.statusCode < 200 || response.statusCode >= 300) {
         final body = await response.transform(utf8.decoder).join();
-        throw HttpException('Device revocation failed (${response.statusCode}): $body');
+        throw HttpException(
+            'Device revocation failed (${response.statusCode}): $body');
       }
     } finally {
       // Clear local credentials even if the backend is unreachable. The user

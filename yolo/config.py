@@ -5,6 +5,7 @@ All tunable thresholds, dimensions, and layout values live here.
 """
 
 import json
+import math
 import os
 import sys
 
@@ -23,15 +24,99 @@ def LoadSettings(path=None):
         if not hasattr(module, key):
             raise ValueError(f"Unknown setting: {key}")
         current = getattr(module, key)
-        if isinstance(current, (int, float)) and not isinstance(value, (int, float)):
+        if isinstance(current, bool) and not isinstance(value, bool):
+            # bool is subclass of int, so check explicitly to prevent 1/0 abuse
+            raise ValueError(f"Setting {key} must be boolean, got {value!r}")
+        if not isinstance(current, bool) and isinstance(current, (int, float)) and not isinstance(value, (int, float)):
             raise ValueError(f"Setting {key} must be numeric, got {value!r}")
+        if isinstance(current, str) and not isinstance(value, str):
+            raise ValueError(f"Setting {key} must be a string, got {value!r}")
         setattr(module, key, value)
+
+
+def UpdateThresholds(updates: dict) -> dict:
+    """Validated bulk update of live thresholds (used by /api/v1/settings).
+
+    Validates types and ranges before mutating module globals. Returns the
+    sanitized dict of actually-changed keys.
+
+    Raises ValueError with a human-readable message on the first bad entry.
+    """
+    module = sys.modules[__name__]
+    sanitized = ValidateRuntimeSettings(updates)
+    for key, value in sanitized.items():
+        setattr(module, key, value)
+    return sanitized
+
+
+_RUNTIME_SETTING_ALIASES = {
+    "ear_threshold": "EarClosedThreshold",
+    "microsleep_duration": "MicrosleepSeconds",
+    "pitch_threshold": "HeadDownPitch",
+    "yaw_threshold": "HeadYawThreshold",
+    "roll_threshold": "HeadRollThreshold",
+    "logging_enabled": "SessionLoggingEnabled",
+    "night_mode": "NightMode",
+    "perclos_threshold": "PerclosAlertThreshold",
+    "yolo_drowsy_threshold": "YoloDrowsyThreshold",
+}
+
+
+def ValidateRuntimeSettings(updates: dict) -> dict:
+    """Return canonical, validated live settings without mutating config."""
+    module = sys.modules[__name__]
+    canonical = {}
+    for key, value in updates.items():
+        if key in {"telegram_enabled", "alarm_enabled"}:
+            if not isinstance(value, bool):
+                raise ValueError(f"Setting {key} must be boolean, got {value!r}")
+            canonical[key] = value
+            continue
+        name = _RUNTIME_SETTING_ALIASES.get(key, key)
+        if not hasattr(module, name):
+            raise ValueError(f"Unknown setting: {key}")
+        current = getattr(module, name)
+        if isinstance(current, bool):
+            if not isinstance(value, bool):
+                raise ValueError(f"Setting {key} must be boolean, got {value!r}")
+            canonical[name] = value
+        elif isinstance(current, (int, float)):
+            try:
+                fv = float(value)
+            except (TypeError, ValueError):
+                raise ValueError(f"Setting {key} must be numeric, got {value!r}") from None
+            if not math.isfinite(fv):
+                raise ValueError(f"Setting {key} must be finite")
+            # Range guards for safety-critical thresholds
+            if name == "EarClosedThreshold" and not 0.05 <= fv <= 0.5:
+                raise ValueError(f"ear_threshold {fv} out of range [0.05,0.5]")
+            if name == "MicrosleepSeconds" and not 0.3 <= fv <= 5.0:
+                raise ValueError(f"microsleep_duration {fv} out of range [0.3,5.0]")
+            if name == "HeadDownPitch" and not 5 <= fv <= 45:
+                raise ValueError(f"pitch_threshold {fv} out of range [5,45]")
+            if name == "HeadYawThreshold" and not 10 <= fv <= 60:
+                raise ValueError(f"yaw_threshold {fv} out of range [10,60]")
+            if name == "HeadRollThreshold" and not 5 <= fv <= 30:
+                raise ValueError(f"roll_threshold {fv} out of range [5,30]")
+            if name == "PerclosAlertThreshold" and not 0.0 <= fv <= 1.0:
+                raise ValueError(f"perclos_threshold {fv} out of range [0,1]")
+            if name == "YoloDrowsyThreshold" and not 0.0 <= fv <= 1.0:
+                raise ValueError(f"yolo_drowsy_threshold {fv} out of range [0,1]")
+            canonical[name] = fv
+        elif isinstance(current, str):
+            if not isinstance(value, str):
+                raise ValueError(f"Setting {key} must be a string, got {value!r}")
+            canonical[name] = value
+        else:
+            raise ValueError(f"Setting {key} cannot be updated at runtime")
+    return canonical
 
 # ── Telegram ──────────────────────────────────────
 TelegramCooldown = 30.0
 
 # ── Session Logging ────────────────────────────────
 SessionLogPath = "logs/session.jsonl"
+SessionLoggingEnabled = True
 
 # ── Calibration ────────────────────────────────────
 CalibrationDuration = 4.0      # seconds of neutral-pose sampling
@@ -52,6 +137,10 @@ FaceModelPoints = (
     (-29.0, 31.5, -18.0),
     (29.0, 31.5, -18.0),
 )
+
+def focal_length(width: int) -> float:
+    """Shared focal length helper (was duplicated 4× as w*1.05)."""
+    return width * 1.05
 
 # ── Head-Pose Thresholds (degrees) ────────────────
 HeadDownPitch = 20.0
@@ -75,7 +164,7 @@ HeadPoseEveryN = 2                # run MediaPipe every N frames
 # ── Performance / Pipeline ─────────────────────────
 CaptureWidth = 640            # camera capture width (display upscales)
 CaptureHeight = 480           # camera capture height
-YoloEveryN = 1                # run YOLO every N frames (1 = every frame)
+YoloEveryN = 2                # run YOLO every N frames (2 = ~15 fps on CPU, was 1 = 80-120ms starve)
 DisplayFps = 30               # display loop target FPS (GUI mode)
 
 # ── EAR / Blink / Microsleep ───────────────────────
@@ -120,6 +209,9 @@ AttentionSmoothAlpha = 0.85
 # ── HUD Rendering ──────────────────────────────────
 PilHud = True                 # use the anti-aliased PIL HUD when available
 NightMode = False             # dim the overlay for night driving
+
+# ── Safety Score ──────────────────────────────────
+SafetyScorePenaltyPerAlert = 3.0  # points deducted per alert from avg_attention
 
 # ── Alert hysteresis ───────────────────────────────
 ClearGraceSeconds = 2.0       # alert stays on this long after condition clears

@@ -2,6 +2,7 @@ import threading
 
 from yolo.monitoring import (
     SNAPSHOT_SCHEMA_VERSION,
+    SelectAlert,
     MonitoringSnapshot,
     MonitoringStore,
 )
@@ -16,6 +17,10 @@ def test_snapshot_is_json_safe_and_versioned():
         ear=0.18,
         alert="MICROSLEEP - EYES CLOSED! WAKE UP!",
         alert_severity=4,
+        calibration_state="failed",
+        calibration_progress=0.75,
+        calibration_error="No valid pose samples",
+        calibration_valid_samples=0,
     )
 
     payload = snapshot.to_dict()
@@ -25,6 +30,25 @@ def test_snapshot_is_json_safe_and_versioned():
     assert payload["trip_active"] is True
     assert payload["ear"] == 0.18
     assert payload["alert_severity"] == 4
+    assert payload["schema_version"] == 2
+    assert payload["calibration_state"] == "failed"
+    assert payload["calibration_progress"] == 0.75
+    assert payload["calibration_error"] == "No valid pose samples"
+
+
+def test_alert_selection_places_low_blink_above_generic_drowsiness():
+    messages = {
+        "microsleep": "MICROSLEEP",
+        "combined": "HEAD NODDING",
+        "perclos": "FATIGUE",
+        "face_lost": "FACE LOST",
+        "head_away": "DISTRACTED",
+        "low_blink": "LOW BLINK RATE",
+        "yolo": "DROWSINESS",
+    }
+    assert SelectAlert(messages, low_blink=True, yolo=True) == "LOW BLINK RATE"
+    assert SelectAlert(messages, perclos=True, low_blink=True) == "FATIGUE"
+    assert SelectAlert(messages, microsleep=True, low_blink=True) == "MICROSLEEP"
 
 
 def test_store_keeps_only_latest_snapshot():

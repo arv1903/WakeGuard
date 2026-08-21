@@ -9,6 +9,8 @@ import argparse
 import os
 import platform
 import queue
+import math
+import threading
 import time
 import uuid
 from collections import deque
@@ -48,8 +50,10 @@ from yolo.detector import CreateDetectionModel, CreateFaceLandmarker
 from yolo.drawing import DrawHud, DrawAlertOverlay, DrawModernBox, DrawHeadAxes
 from yolo.pipeline import CameraThread, InferenceThread
 from yolo.stats import PerfStats
-from yolo.monitoring import GetAlertSeverity, MonitoringSnapshot, MonitoringStore
-from yolo.api import MonitoringApi
+from yolo.monitoring import (GetAlertSeverity, MonitoringSnapshot,
+                             MonitoringStore, SNAPSHOT_SCHEMA_VERSION,
+                             SelectAlert)
+from yolo.api import CommandConflictError, MonitoringApi
 from yolo.config import LoadSettings
 import yolo.config as _config
 
@@ -64,7 +68,8 @@ _CONFIG_NAMES = (
     "AttentionUnfocusedMin TelegramCooldown PerclosAlertThreshold "
     "PerclosAlertTime PerclosWindowSeconds DrowsyEmaAlpha EyesClosedYoloConf "
     "EarClosedThreshold EarMinBlinkSeconds MicrosleepSeconds ClearGraceSeconds "
-    "CalibrationDuration CalibrationCountdown ProfilePath SessionLogPath PilHud"
+    "CalibrationDuration CalibrationCountdown ProfilePath SessionLogPath PilHud "
+    "SessionLoggingEnabled NightMode"
 ).split()
 
 
@@ -110,7 +115,9 @@ def main():
         PrintSummary(BuildSummary(args.summary))
         return
 
-    if args.api:
+    if args.api and not args.headless:
+        print("[info] --api implies --headless; forcing headless mode (use --api without display window)")
+
         args.headless = True
 
     source = int(args.source) if args.source.isdigit() else args.source
@@ -221,10 +228,38 @@ def main():
     api_started_at = time.time()
     snapshot_sequence = 0
     cal_session: CalibrationSession | None = None
+    calibration_status = {
+        "state": "idle",
+        "progress": 0.0,
+        "error": None,
+        "valid_samples": 0,
+    }
+    calibration_command_pending = False
+    calibration_lock = threading.Lock()
     api_commands = queue.Queue()
     monitoring_store = MonitoringStore()
 
     def handle_api_command(command, payload):
+        nonlocal calibration_command_pending
+        if command == "update_settings":
+            # Validate before acknowledging the HTTP request. The display
+            # thread still owns mutation and side effects.
+            payload = _config.ValidateRuntimeSettings(payload or {})
+        elif command == "start_calibration":
+            payload = payload or {}
+            duration = payload.get("duration", CalibrationDuration)
+            if isinstance(duration, bool) or not isinstance(duration, (int, float)):
+                raise ValueError("calibration duration must be numeric")
+            duration = float(duration)
+            if not math.isfinite(duration) or not 1.0 <= duration <= 30.0:
+                raise ValueError("calibration duration must be between 1 and 30 seconds")
+            with calibration_lock:
+                if inference is None or camera is None:
+                    raise CommandConflictError("start a monitoring session before calibration")
+                if calibration_command_pending or calibration_status["state"] == "running":
+                    raise CommandConflictError("calibration is already running")
+                calibration_command_pending = True
+            payload = {"duration": duration}
         api_commands.put((command, payload))
         return {"accepted": True, "command": command}
 
@@ -247,7 +282,7 @@ def main():
     def api_metadata():
         return {
             "service": "driver-monitor",
-            "schema_version": 1,
+            "schema_version": SNAPSHOT_SCHEMA_VERSION,
             "api_version": "v1",
             "device_name": os.environ.get("DRIVER_DEVICE_NAME") or platform.node(),
             "platform": platform.system().lower(),
@@ -283,6 +318,10 @@ def main():
             looking_away=False, head_tilt=False, focused=False,
             unfocused=False, alert=None, alert_severity=0,
             alarm_muted=False, fps=0,
+            calibration_state=calibration_status["state"],
+            calibration_progress=calibration_status["progress"],
+            calibration_error=calibration_status["error"],
+            calibration_valid_samples=calibration_status["valid_samples"],
         ))
 
     if not args.headless:
@@ -315,6 +354,9 @@ def main():
                         if _needs_calibration:
                             cal_session = CalibrationSession(duration=CalibrationDuration)
                             cal_session.start()
+                            calibration_status.update(
+                                state="running", progress=0.0, error=None,
+                                valid_samples=0)
                             print("[session] started non-blocking neutral head pose calibration...")
                     trip_active = True
                     last_log_time = time.monotonic()
@@ -324,33 +366,47 @@ def main():
                     trip_active = False
                     _stop_pipeline()
                 elif command == "start_calibration":
-                    requested_duration = payload.get("duration", CalibrationDuration)
-                    if not isinstance(requested_duration, (int, float)):
-                        print("[api] calibration duration must be numeric")
-                        continue
-                    duration = max(1.0, min(float(requested_duration), 30.0))
+                    duration = payload["duration"]
                     cal_session = CalibrationSession(duration=duration)
                     cal_session.start()
+                    calibration_status.update(
+                        state="running", progress=0.0, error=None,
+                        valid_samples=0)
+                    with calibration_lock:
+                        calibration_command_pending = False
                     print(f"[api] started non-blocking calibration ({duration:.1f}s)")
                 elif command == "update_settings":
-                    for k, v in (payload or {}).items():
-                        if k in ("ear_threshold", "EarClosedThreshold"):
-                            blinks._closed_threshold = float(v)
-                            globals()["EarClosedThreshold"] = float(v)
-                        elif k in ("microsleep_duration", "MicrosleepSeconds"):
-                            blinks._microsleep_seconds = float(v)
-                            globals()["MicrosleepSeconds"] = float(v)
-                        elif k in ("pitch_threshold", "HeadDownPitch"):
-                            globals()["HeadDownPitch"] = float(v)
-                        elif k in ("yaw_threshold", "HeadYawThreshold"):
-                            globals()["HeadYawThreshold"] = float(v)
-                        elif k in ("roll_threshold", "HeadRollThreshold"):
-                            globals()["HeadRollThreshold"] = float(v)
-                        elif k == "telegram_enabled":
-                            telegram.SetTelegramEnabled(bool(v))
-                        elif k == "alarm_enabled":
-                            alarm_muted = not bool(v)
+                    # Validated settings update — any bad value raises ValueError
+                    # which api.py translates to 400 so the Flutter toggle gets
+                    # feedback instead of silently pretending to work.
+                    try:
+                        payload = payload or {}
+                        config_updates = {
+                            key: value for key, value in payload.items()
+                            if key not in {"telegram_enabled", "alarm_enabled"}
+                        }
+                        _config.UpdateThresholds(config_updates)
+                        for name in _CONFIG_NAMES:
+                            if name in config_updates:
+                                globals()[name] = config_updates[name]
+                        # Blink-related thresholds via the monitor's validator
+                        if "EarClosedThreshold" in payload:
+                            blinks.configure(closed_threshold=payload["EarClosedThreshold"])
+                            globals()["EarClosedThreshold"] = payload["EarClosedThreshold"]
+                        if "MicrosleepSeconds" in payload:
+                            blinks.configure(microsleep_seconds=payload["MicrosleepSeconds"])
+                            globals()["MicrosleepSeconds"] = payload["MicrosleepSeconds"]
+                        if "telegram_enabled" in payload:
+                            telegram.SetTelegramEnabled(bool(payload["telegram_enabled"]))
+                        if "alarm_enabled" in payload:
+                            alarm_muted = not payload["alarm_enabled"]
                             SetAlarmMuted(alarm_muted)
+                        if "SessionLoggingEnabled" in payload:
+                            print(f"[api] logging {'enabled' if payload['SessionLoggingEnabled'] else 'disabled'}")
+                    except ValueError:
+                        raise
+                    except Exception as exc:
+                        raise ValueError(str(exc))
                     print(f"[api] updated settings: {payload}")
 
             # When no session is active the pipeline is stopped — just
@@ -365,9 +421,12 @@ def main():
                 print("[session] pipeline active")
                 _idle_logged = False
 
-            result = inference.latest_result()
+            # Use Condition-based wait instead of spin-poll sleep(0.005)
+            # which woke 200×/s for nothing (~8% CPU waste).
+            if not hasattr(main, "_infer_version"):
+                main._infer_version = -1  # type: ignore[attr-defined]
+            result, main._infer_version = inference.wait_for_result(main._infer_version, timeout=0.5)  # type: ignore[attr-defined]
             if result is None:
-                time.sleep(0.005)
                 continue
 
             Now = time.monotonic()
@@ -404,16 +463,27 @@ def main():
             hp = result.head_pose
             if cal_session is not None and cal_session.is_active:
                 cal_session.update(hp, Now)
+                calibration_status.update(
+                    progress=cal_session.progress,
+                    valid_samples=cal_session.valid_samples)
                 if cal_session.is_finished:
                     try:
                         profile = cal_session.finish()
                         profile.save(ProfilePath)
+                        calibration_status.update(
+                            state="succeeded", progress=1.0, error=None,
+                            valid_samples=cal_session.valid_samples)
+                        _needs_calibration = False
                         print(f"[calibration] saved profile (pitch={profile.neutral_pitch:.1f}, "
                               f"yaw={profile.neutral_yaw:.1f}, roll={profile.neutral_roll:.1f})")
-                    except RuntimeError as exc:
+                    except (RuntimeError, OSError) as exc:
+                        calibration_status.update(
+                            state="failed", progress=cal_session.progress,
+                            error=str(exc),
+                            valid_samples=cal_session.valid_samples)
+                        _needs_calibration = True
                         print(f"[calibration] failed: {exc}")
                     cal_session = None
-                    _needs_calibration = False
 
             if hp["valid"]:
                 alpha = PoseSmoothAlpha
@@ -475,8 +545,11 @@ def main():
 
             # ── PERCLOS + EMA (fuses YOLO confidence and EAR) ──────
             ema_now = ema_drowsy.update(result.max_drowsy)
+            # EAR is only trusted when a face pose is valid — prevents
+            # spurious eye-closed when half-occluded (ComputeEAR now returns
+            # None, but guard with pose_valid for defense in depth).
             eyes_closed = (ema_now > EyesClosedYoloConf
-                           or (result.ear is not None and result.ear < EarClosedThreshold))
+                           or (hp["valid"] and result.ear is not None and result.ear < EarClosedThreshold))
             perclos_now = perclos.update(eyes_closed)
             PerclosAcc, PerclosFired = UpdateTimer(
                 perclos_now > PerclosAlertThreshold, PerclosAcc, DeltaTime,
@@ -486,7 +559,8 @@ def main():
                 PerclosFired, 0.0 if TimerFrozen else DeltaTime)
 
             # ── Microsleep (EAR-based) — most dangerous ────────────
-            blink_state = blinks.update(result.ear if result.ear is not None else 1.0, Now)
+            # Pass ear directly; BlinkMonitor treats None as eyes-open.
+            blink_state = blinks.update(result.ear, Now)
             MicrosleepAlert = latches["microsleep"].update(
                 blink_state["microsleep"], 0.0 if TimerFrozen else DeltaTime)
 
@@ -558,18 +632,24 @@ def main():
                 alert_severity=GetAlertSeverity(AlertMsg),
                 alarm_muted=alarm_muted,
                 fps=draw_fps,
+                calibration_state=calibration_status["state"],
+                calibration_progress=calibration_status["progress"],
+                calibration_error=calibration_status["error"],
+                calibration_valid_samples=calibration_status["valid_samples"],
             ))
             if monitoring_api is not None:
                 monitoring_api.publish_frame(frame)
 
             # ── Session logging (alert transitions + 1 Hz samples) ──
-            if trip_active and AlertMsg != prev_alert:
+            # Respect SessionLoggingEnabled — the Flutter toggle now actually works.
+            do_log = trip_active and globals().get("SessionLoggingEnabled", True)
+            if do_log and AlertMsg != prev_alert:
                 if AlertMsg:
                     logger.alert_event(AlertMsg, 0.0)
                 else:
                     logger.clear_event(prev_alert or "")
                 prev_alert = AlertMsg
-            if trip_active and Now - last_log_time >= 1.0:
+            if do_log and Now - last_log_time >= 1.0:
                 logger.frame_sample(SmoothedAttention, perclos_now, ema_now,
                                     SmoothedPitch, SmoothedYaw, SmoothedRoll,
                                     hp["valid"], AlertMsg,

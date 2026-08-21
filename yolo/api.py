@@ -37,6 +37,10 @@ class _ApiServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
+class CommandConflictError(RuntimeError):
+    """A command cannot run because the current runtime state conflicts."""
+
+
 class _RequestHandler(BaseHTTPRequestHandler):
     """Small JSON/SSE handler kept private behind ``MonitoringApi``."""
 
@@ -193,11 +197,29 @@ class _RequestHandler(BaseHTTPRequestHandler):
         else:
             self._error(404, "endpoint not found")
 
+    def _is_local_address(self, addr: str) -> bool:
+        if addr in ("127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"):
+            return True
+        if addr.startswith("127."):
+            return True
+        # Docker/desktop bridge may present as 172.x but still host-local
+        # when server is bound to 127.0.0.1; check that binding.
+        if self.api.host in ("127.0.0.1", "localhost", "::1"):
+            # If server is loopback-bound, any non-local client must have
+            # traversed a reverse proxy — deny.
+            return False
+        return False
+
     def _send_pairing(self) -> None:
         # The code is only retrievable from the same machine. A mobile client
         # receives it out-of-band from the desktop UI or an explicitly shown
         # QR payload, rather than through an unauthenticated LAN request.
-        if self.client_address[0] not in ("127.0.0.1", "::1"):
+        client_ip = self.client_address[0]
+        # Also check X-Forwarded-For / Forwarded if behind proxy — deny if present
+        if self.headers.get("X-Forwarded-For") or self.headers.get("Forwarded"):
+            self._error(403, "pairing code is local-only (proxy detected)")
+            return
+        if not self._is_local_address(client_ip):
             self._error(403, "pairing code is local-only")
             return
         self._send_json(200, self.api.pairing.details())
@@ -337,6 +359,9 @@ class _RequestHandler(BaseHTTPRequestHandler):
             result = self.api.command_handler(command, payload) or {"accepted": True}
         except ValueError as exc:
             self._error(400, str(exc))
+            return
+        except CommandConflictError as exc:
+            self._error(409, str(exc))
             return
         except Exception:
             self._error(500, "command failed")

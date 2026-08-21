@@ -2,7 +2,7 @@ from yolo import config
 
 
 def test_alert_messages_cover_all_channels():
-    expected = {"combined", "face_lost", "head_away", "yolo",
+    expected = {"combined", "face_lost", "head_away", "low_blink", "yolo",
                 "perclos", "microsleep"}
     assert set(config.AlertMessages.keys()) == expected
 

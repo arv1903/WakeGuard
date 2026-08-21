@@ -3,6 +3,8 @@
 import json
 from collections import Counter
 
+from .score import compute_safety_score
+
 
 def BuildSummary(log_path: str, session_id: str | None = None) -> dict:
     attentions, perclos = [], []
@@ -87,7 +89,7 @@ def BuildSessionHistory(log_path: str, limit: int = 10) -> list[dict]:
             "duration_s": dur,
             "avg_attention": round(avg_att, 1),
             "alert_count": len(alerts),
-            "safety_score": round(max(0.0, min(100.0, avg_att - len(alerts) * 3))),
+            "safety_score": round(compute_safety_score(avg_att, len(alerts))),
         })
     history.sort(key=lambda x: x["started_at"], reverse=True)
     return history[:limit]

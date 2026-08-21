@@ -5,7 +5,7 @@ void main() {
   group('MonitoringSnapshot.fromJson', () {
     test('parses a full JSON payload', () {
       final json = <String, dynamic>{
-        'schema_version': 1,
+        'schema_version': 2,
         'sequence': 42,
         'server_id': 'abc123',
         'timestamp': 1700000000.0,
@@ -35,11 +35,15 @@ void main() {
         'alert_severity': 0,
         'alarm_muted': false,
         'fps': 30.0,
+        'calibration_state': 'running',
+        'calibration_progress': 0.5,
+        'calibration_error': null,
+        'calibration_valid_samples': 12,
       };
 
       final snap = MonitoringSnapshot.fromJson(json);
 
-      expect(snap.schemaVersion, 1);
+      expect(snap.schemaVersion, 2);
       expect(snap.sequence, 42);
       expect(snap.serverId, 'abc123');
       expect(snap.timestamp, 1700000000.0);
@@ -64,6 +68,10 @@ void main() {
       expect(snap.alert, null);
       expect(snap.alertSeverity, 0);
       expect(snap.fps, 30.0);
+      expect(snap.calibrationState, 'running');
+      expect(snap.calibrationProgress, 0.5);
+      expect(snap.calibrationError, isNull);
+      expect(snap.calibrationValidSamples, 12);
     });
 
     test('handles empty JSON with defaults', () {
@@ -79,6 +87,9 @@ void main() {
       expect(snap.tripStartedAt, isNull);
       expect(snap.alert, isNull);
       expect(snap.focused, false);
+      expect(snap.calibrationState, 'idle');
+      expect(snap.calibrationProgress, 0.0);
+      expect(snap.calibrationError, isNull);
     });
 
     test('handles int values where doubles expected', () {

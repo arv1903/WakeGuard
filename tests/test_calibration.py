@@ -51,3 +51,30 @@ def test_calibration_session_non_blocking():
     assert profile.neutral_pitch == pytest.approx(11.0)
     assert profile.neutral_yaw == pytest.approx(-5.0)
     assert profile.neutral_roll == pytest.approx(3.0)
+
+
+def test_calibration_session_exposes_progress_and_valid_sample_count():
+    session = CalibrationSession(duration=2.0)
+    assert session.progress == 0.0
+    assert session.valid_samples == 0
+
+    session.start(now=10.0)
+    session.update({"valid": False}, now=10.5)
+    assert session.progress == pytest.approx(0.25)
+    assert session.valid_samples == 0
+
+    session.update({"pitch": 1.0, "yaw": 2.0, "roll": 3.0, "valid": True}, now=11.0)
+    assert session.progress == pytest.approx(0.5)
+    assert session.valid_samples == 1
+
+
+def test_calibration_restart_resets_exposed_state():
+    session = CalibrationSession(duration=1.0)
+    session.start(now=1.0)
+    session.update({"pitch": 1.0, "yaw": 2.0, "roll": 3.0, "valid": True}, now=2.0)
+    assert session.progress == 1.0
+
+    session.start(now=5.0)
+    assert session.progress == 0.0
+    assert session.valid_samples == 0
+    assert session.is_active

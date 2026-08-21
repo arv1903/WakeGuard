@@ -37,6 +37,7 @@ class CalibrationSession:
         self.samples: list[dict] = []
         self._start_time: float | None = None
         self._completed = False
+        self._progress = 0.0
 
     @property
     def is_active(self) -> bool:
@@ -46,10 +47,19 @@ class CalibrationSession:
     def is_finished(self) -> bool:
         return self._completed
 
+    @property
+    def progress(self) -> float:
+        return self._progress
+
+    @property
+    def valid_samples(self) -> int:
+        return len(self.samples)
+
     def start(self, now: float | None = None) -> None:
         self.samples.clear()
         self._start_time = time.monotonic() if now is None else now
         self._completed = False
+        self._progress = 0.0
 
     def update(self, pose: dict | None, now: float | None = None) -> float:
         """Feed a pose dict. Returns progress in [0.0, 1.0]."""
@@ -60,6 +70,7 @@ class CalibrationSession:
         if pose and pose.get("valid"):
             self.samples.append(pose)
         progress = min(1.0, max(0.0, elapsed / self.duration))
+        self._progress = progress
         if elapsed >= self.duration:
             self._completed = True
         return progress
