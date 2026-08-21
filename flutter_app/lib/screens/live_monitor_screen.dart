@@ -34,7 +34,11 @@ class _LiveMonitorScreenState extends State<LiveMonitorScreen> {
   }
 
   void _onClientUpdate() {
-    if (mounted) setState(() {});
+    if (mounted) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() {});
+      });
+    }
   }
 
   String get _sessionElapsed {
@@ -93,76 +97,49 @@ class _LiveMonitorScreenState extends State<LiveMonitorScreen> {
 
 // ─── Animated Alert Banner ──────────────────────────────────────────────────
 
-class _AnimatedAlertBanner extends StatefulWidget {
+class _AnimatedAlertBanner extends StatelessWidget {
   const _AnimatedAlertBanner({required this.snap});
   final MonitoringSnapshot snap;
 
   @override
-  State<_AnimatedAlertBanner> createState() => _AnimatedAlertBannerState();
-}
-
-class _AnimatedAlertBannerState extends State<_AnimatedAlertBanner> with SingleTickerProviderStateMixin {
-  late AnimationController _pulseCtrl;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulseCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1400))..repeat(reverse: true);
-  }
-
-  @override
-  void dispose() {
-    _pulseCtrl.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final color = AppColors.severity(widget.snap.alertSeverity);
-    return AnimatedBuilder(
-      animation: _pulseCtrl,
-      builder: (context, _) {
-        final glowOpacity = 0.08 + _pulseCtrl.value * 0.12;
-        return Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: color.withOpacity(0.15),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: color.withOpacity(0.3 + _pulseCtrl.value * 0.2)),
-            boxShadow: [
-              BoxShadow(color: color.withOpacity(glowOpacity), blurRadius: 16 + _pulseCtrl.value * 8),
-            ],
+    final color = AppColors.severity(snap.alertSeverity);
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.4)),
+        boxShadow: [BoxShadow(color: color.withOpacity(0.12), blurRadius: 16)],
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 48, height: 48,
+            decoration: BoxDecoration(color: color.withOpacity(0.15), shape: BoxShape.circle),
+            child: Icon(Icons.warning_rounded, color: color, size: 28),
           ),
-          child: Row(
-            children: [
-              Container(
-                width: 48, height: 48,
-                decoration: BoxDecoration(color: color.withOpacity(0.15), shape: BoxShape.circle),
-                child: Icon(Icons.warning_rounded, color: color, size: 28),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(widget.snap.alert!.toUpperCase(),
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: color, letterSpacing: 0.5)),
-                    const SizedBox(height: 4),
-                    Text('Severity: ${widget.snap.alertSeverity} | Confidence: ${(widget.snap.emaDrowsy * 100).toStringAsFixed(0)}%',
-                      style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
-                  ],
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(color: color.withOpacity(0.15), borderRadius: BorderRadius.circular(8), border: Border.all(color: color.withOpacity(0.3))),
-                child: Text('SEV ${widget.snap.alertSeverity}',
-                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: color, letterSpacing: 1)),
-              ),
-            ],
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(snap.alert!.toUpperCase(),
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: color, letterSpacing: 0.5)),
+                const SizedBox(height: 4),
+                Text('Severity: ${snap.alertSeverity} | Confidence: ${(snap.emaDrowsy * 100).toStringAsFixed(0)}%',
+                  style: TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+              ],
+            ),
           ),
-        );
-      },
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(color: color.withOpacity(0.15), borderRadius: BorderRadius.circular(8), border: Border.all(color: color.withOpacity(0.3))),
+            child: Text('SEV ${snap.alertSeverity}',
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: color, letterSpacing: 1)),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -717,58 +694,15 @@ class _MjpegViewState extends State<_MjpegView> {
 
 // ─── Camera Loading Placeholder with Scanning Animation ────────────────────
 
-class _CameraLoadingPlaceholder extends StatefulWidget {
+class _CameraLoadingPlaceholder extends StatelessWidget {
   const _CameraLoadingPlaceholder();
-
-  @override
-  State<_CameraLoadingPlaceholder> createState() => _CameraLoadingPlaceholderState();
-}
-
-class _CameraLoadingPlaceholderState extends State<_CameraLoadingPlaceholder> with SingleTickerProviderStateMixin {
-  late AnimationController _scanCtrl;
-
-  @override
-  void initState() {
-    super.initState();
-    _scanCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 2500))..repeat();
-  }
-
-  @override
-  void dispose() { _scanCtrl.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
     return Stack(
       alignment: Alignment.center,
       children: [
-        // Background grid pattern
         CustomPaint(size: Size.infinite, painter: _GridPainter()),
-        // Scanning line
-        AnimatedBuilder(
-          animation: _scanCtrl,
-          builder: (context, _) {
-            return Positioned(
-              top: 0, left: 0, right: 0,
-              child: FractionallySizedBox(
-                heightFactor: 1.0,
-                child: Align(
-                  alignment: Alignment(0, -1 + _scanCtrl.value * 2),
-                  child: Container(height: 2, width: double.infinity,
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [
-                          AppColors.focusedGreen.withOpacity(0),
-                          AppColors.focusedGreen.withOpacity(0.6),
-                          AppColors.focusedGreen.withOpacity(0),
-                        ],
-                      ),
-                    )),
-                ),
-              ),
-            );
-          },
-        ),
-        // Center content
         Column(mainAxisSize: MainAxisSize.min, children: [
           Container(
             width: 48, height: 48,

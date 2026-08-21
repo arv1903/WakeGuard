@@ -138,11 +138,7 @@ class _SnapshotSmoother {
 
 class MonitoringClient extends ChangeNotifier {
   MonitoringClient({required String baseUrl, this.token})
-      : _baseUrl = _cleanBaseUrl(baseUrl) {
-    _staleTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!_disposed) notifyListeners();
-    });
-  }
+      : _baseUrl = _cleanBaseUrl(baseUrl);
 
   String _baseUrl;
   String? token;
@@ -153,7 +149,7 @@ class MonitoringClient extends ChangeNotifier {
   DateTime? lastUpdate;
   int _generation = 0;
   bool _disposed = false;
-  Timer? _staleTimer;
+
   final ValueNotifier<Uint8List?> _latestFrameBytes = ValueNotifier<Uint8List?>(null);
   final _SnapshotSmoother _smoother = _SnapshotSmoother();
 
@@ -243,9 +239,9 @@ class MonitoringClient extends ChangeNotifier {
         // Stream ended normally (server closed); treat it as a reconnect.
       } catch (error) {
         if (generation != _generation || _disposed) return;
-        connectionState = BackendConnectionState.error;
-        errorMessage = error.toString();
-        notifyListeners();
+        // Don't overwrite connectionState — the SSE event loop manages
+        // it. MJPEG failures are expected while the pipeline is idle
+        // (no frames published). Retry silently.
         await Future<void>.delayed(delay);
         delay = Duration(
           milliseconds: (delay.inMilliseconds * 2).clamp(250, 5000).toInt(),
@@ -483,7 +479,7 @@ class MonitoringClient extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _generation++;
-    _staleTimer?.cancel();
+
     _latestFrameBytes.dispose();
     _http.close(force: true);
     super.dispose();

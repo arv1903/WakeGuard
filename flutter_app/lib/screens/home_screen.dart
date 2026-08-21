@@ -13,7 +13,7 @@ class HomeScreen extends StatelessWidget {
     return ListenableBuilder(
       listenable: client,
       builder: (context, _) {
-        final connected = client.connectionState == BackendConnectionState.connected && !client.isStale;
+        final connected = client.connectionState == BackendConnectionState.connected;
         final snap = client.snapshot;
         final sessionActive = snap.tripActive;
         final elapsed = snap.tripStartedAt != null
@@ -208,58 +208,34 @@ class _HeroCard extends StatelessWidget {
 
 // ─── Glowing CTA Button ─────────────────────────────────────────────────────
 
-class _GlowingButton extends StatefulWidget {
+class _GlowingButton extends StatelessWidget {
   const _GlowingButton({required this.onPressed, required this.child});
   final VoidCallback? onPressed;
   final Widget child;
 
   @override
-  State<_GlowingButton> createState() => _GlowingButtonState();
-}
-
-class _GlowingButtonState extends State<_GlowingButton> with SingleTickerProviderStateMixin {
-  late AnimationController _ctrl;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 2500))..repeat(reverse: true);
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _ctrl,
-      builder: (context, _) {
-        return Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(12),
-            boxShadow: widget.onPressed != null ? [
-              BoxShadow(
-                color: AppColors.textPrimary.withOpacity(0.08 + _ctrl.value * 0.08),
-                blurRadius: 16 + _ctrl.value * 8,
-              ),
-            ] : null,
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: onPressed != null ? [
+          BoxShadow(
+            color: AppColors.textPrimary.withOpacity(0.12),
+            blurRadius: 18,
           ),
-          child: ElevatedButton(
-            onPressed: widget.onPressed,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.textPrimary,
-              foregroundColor: AppColors.surface0,
-              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 20),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              elevation: 0,
-            ),
-            child: widget.child,
-          ),
-        );
-      },
+        ] : null,
+      ),
+      child: ElevatedButton(
+        onPressed: onPressed,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: AppColors.textPrimary,
+          foregroundColor: AppColors.surface0,
+          padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 20),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          elevation: 0,
+        ),
+        child: child,
+      ),
     );
   }
 }

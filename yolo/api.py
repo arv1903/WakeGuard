@@ -234,7 +234,10 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._error(400, "after must not be negative")
             return
 
-        snapshot = self.api.store.wait_for_update(after_sequence=after, timeout=25.0)
+        try:
+            snapshot = self.api.store.wait_for_update(after_sequence=after, timeout=25.0)
+        except Exception:
+            return
         event = {
             "type": "monitoring_state",
             "data": self.api.snapshot_payload(snapshot),
@@ -244,7 +247,11 @@ class _RequestHandler(BaseHTTPRequestHandler):
             "event: monitoring_state\n"
             f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
         ).encode("utf-8")
-        self._send_bytes(200, body, "text/event-stream; charset=utf-8")
+        try:
+            self._send_bytes(200, body, "text/event-stream; charset=utf-8")
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            # Client disconnected before we could write the response.
+            return
 
     def do_POST(self):  # noqa: N802 - stdlib handler signature
         parsed = urlparse(self.path)
@@ -290,6 +297,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
         command_paths = {
             f"{API_PREFIX}/trips/start": "start_trip",
             f"{API_PREFIX}/trips/stop": "stop_trip",
+            f"{API_PREFIX}/session/start": "start_trip",
+            f"{API_PREFIX}/session/stop": "stop_trip",
             f"{API_PREFIX}/calibration/start": "start_calibration",
             f"{API_PREFIX}/alarm/mute": "mute_alarm",
             f"{API_PREFIX}/alarm/unmute": "unmute_alarm",
