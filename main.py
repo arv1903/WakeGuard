@@ -125,19 +125,42 @@ def main():
         except EOFError:
             pass
 
+    # Load detection models once at startup (cheap), but defer camera/
+    # inference threads until a session is started via the API.
     detection_model = CreateDetectionModel("best.pt")
     face_landmarker = CreateFaceLandmarker("face_landmarker.task")
 
-    camera = CameraThread(source, CaptureWidth, CaptureHeight)
-    inference = InferenceThread(camera, detection_model, face_landmarker,
-                                pose_every_n=HeadPoseEveryN, yolo_every_n=YoloEveryN)
-    camera.start()
-    inference.start()
+    camera = None
+    inference = None
+
+    def _start_pipeline():
+        nonlocal camera, inference
+        if camera is not None and camera.is_alive():
+            return  # already running
+        camera = CameraThread(source, CaptureWidth, CaptureHeight)
+        inference = InferenceThread(camera, detection_model, face_landmarker,
+                                    pose_every_n=HeadPoseEveryN, yolo_every_n=YoloEveryN)
+        camera.start()
+        inference.start()
+        print("[session] camera + inference pipeline started")
+
+    def _stop_pipeline():
+        nonlocal camera, inference
+        if inference is not None:
+            inference.stop()
+            inference = None
+        if camera is not None:
+            camera.stop()
+            camera = None
+        print("[session] camera + inference pipeline stopped")
+
     if not args.no_telegram:
         telegram.StartTelegramWorker()
 
     # ── Calibration ───────────────────────────────────────────────
     def current_pose():
+        if inference is None:
+            return {"valid": False}
         r = inference.latest_result()
         if r is None or not r.head_pose.get("valid"):
             return {"valid": False}
@@ -145,29 +168,18 @@ def main():
                 "yaw": r.head_pose["yaw"],
                 "roll": r.head_pose["roll"], "valid": True}
 
+    # Load existing profile but do NOT run calibration at startup —
+    # calibration is deferred to when a session starts and the pipeline
+    # is running (so there are actual frames to calibrate from).
+    _needs_calibration = False
     profile = CalibrationProfile.load(ProfilePath)
-    if profile is None or args.calibrate:
-        if args.headless or args.skip_calibration:
-            if profile is None:
-                print("[warn] No calibration profile and headless/skip-calibration: "
-                      "using neutral defaults.")
-            elif args.calibrate:
-                print("[warn] --calibrate ignored in headless mode; keeping "
-                      "existing profile.")
-            profile = profile or CalibrationProfile()
-        else:
-            print(f"LOOK STRAIGHT AHEAD — calibrating neutral head pose in "
-                  f"{int(CalibrationCountdown)}s...")
-            time.sleep(CalibrationCountdown)
-            try:
-                profile = RunCalibration(current_pose, duration=CalibrationDuration)
-                profile.save(ProfilePath)
-                print(f"Calibration saved to {ProfilePath} "
-                      f"(pitch={profile.neutral_pitch:.1f}, "
-                      f"yaw={profile.neutral_yaw:.1f}, roll={profile.neutral_roll:.1f})")
-            except RuntimeError as exc:
-                print(f"[warn] {exc} Keeping existing profile (if any).")
-                profile = profile or CalibrationProfile()
+    if profile is None:
+        profile = CalibrationProfile()
+        _needs_calibration = True
+        print("[warn] No calibration profile; using neutral defaults. "
+              "Calibration will run when a session starts.")
+    elif args.calibrate:
+        _needs_calibration = True
 
     # ── State (unchanged logic from the original loop) ────────────
     LastTime = time.monotonic()
@@ -202,7 +214,8 @@ def main():
     recorder_path = args.record
     alarm_muted = False
     paused = False
-    trip_active = True
+    trip_active = False
+    _idle_logged = False
     session_id = uuid.uuid4().hex
     trip_started_at = time.time()
     api_started_at = time.time()
@@ -251,6 +264,20 @@ def main():
         )
         monitoring_api.start()
         print(f"Monitoring API listening on {args.api_host}:{monitoring_api.port}")
+        # Publish an initial idle snapshot so SSE clients get an immediate
+        # response instead of blocking for 25 s on the first connect.
+        snapshot_sequence += 1
+        monitoring_store.publish(MonitoringSnapshot(
+            sequence=snapshot_sequence, timestamp=time.time(),
+            session_id=session_id, trip_started_at=trip_started_at,
+            trip_active=False, attention=0, perclos=0, ema_drowsy=0,
+            ear=None, eyes_closed=False, microsleep=False, blinks_per_min=0,
+            pitch=0, yaw=0, roll=0, pose_valid=False, face_found=False,
+            face_lost=False, face_lost_progress=0, head_down=False,
+            looking_away=False, head_tilt=False, focused=False,
+            unfocused=False, alert=None, alert_severity=0,
+            alarm_muted=False, fps=0,
+        ))
 
     if not args.headless:
         cv2.namedWindow("Drowsiness Detection", cv2.WINDOW_NORMAL)
@@ -276,10 +303,21 @@ def main():
                     if not trip_active:
                         session_id = uuid.uuid4().hex
                         trip_started_at = time.time()
+                        _start_pipeline()
+                        # Run calibration on first session if needed
+                        if _needs_calibration:
+                            try:
+                                print("[session] calibrating neutral head pose...")
+                                profile = RunCalibration(current_pose, duration=CalibrationDuration)
+                                profile.save(ProfilePath)
+                                print(f"[session] calibration saved")
+                            except RuntimeError as exc:
+                                print(f"[session] calibration failed: {exc}")
                     trip_active = True
                     last_log_time = time.monotonic()
                 elif command == "stop_trip":
                     trip_active = False
+                    _stop_pipeline()
                 elif command == "start_calibration":
                     requested_duration = payload.get("duration", CalibrationDuration)
                     if not isinstance(requested_duration, (int, float)):
@@ -293,6 +331,18 @@ def main():
                         print("[api] calibration saved")
                     except RuntimeError as exc:
                         print(f"[api] calibration failed: {exc}")
+
+            # When no session is active the pipeline is stopped — just
+            # idle and keep draining API commands.
+            if inference is None or camera is None:
+                if not _idle_logged:
+                    print("[idle] Waiting for a session to start...")
+                    _idle_logged = True
+                time.sleep(0.1)
+                continue
+            elif _idle_logged:
+                print("[session] pipeline active")
+                _idle_logged = False
 
             result = inference.latest_result()
             if result is None:
@@ -568,13 +618,12 @@ def main():
             DisplayStats.tock("draw")
 
     finally:
+        _stop_pipeline()
         if monitoring_api is not None:
             monitoring_api.stop()
         logger.close()
         if recorder is not None:
             recorder.release()
-        inference.stop()
-        camera.stop()
         telegram.StopTelegramWorker()
         if not args.headless:
             cv2.destroyAllWindows()

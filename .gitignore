@@ -1,5 +1,6 @@
 # Freebuff desktop data
 .freebuff/
+.kilo/
 
 # Python
 __pycache__/
