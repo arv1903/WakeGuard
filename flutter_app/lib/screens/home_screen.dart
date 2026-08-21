@@ -1,12 +1,48 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../services/monitoring_client.dart';
 import '../theme.dart';
 
-class HomeScreen extends StatelessWidget {
-  const HomeScreen({super.key, required this.client, required this.onStartSession});
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({
+    super.key,
+    required this.client,
+    required this.onStartSession,
+    this.onNavigate,
+  });
   final MonitoringClient client;
   final VoidCallback onStartSession;
+  /// Callback to switch AppShell tab (0=Home, 1=Analytics, 2=Settings).
+  final void Function(int)? onNavigate;
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  List<Map<String, dynamic>> _tripHistory = [];
+  bool _loadingHistory = false;
+
+  MonitoringClient get client => widget.client;
+  void Function(int)? get onNavigate => widget.onNavigate;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchTrips();
+  }
+
+  Future<void> _fetchTrips() async {
+    if (_loadingHistory) return;
+    _loadingHistory = true;
+    try {
+      final trips = await client.fetchTripHistory();
+      if (mounted) setState(() => _tripHistory = trips);
+    } catch (_) {}
+    _loadingHistory = false;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -30,7 +66,7 @@ class HomeScreen extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _HeroCard(connected: connected, onStart: onStartSession),
+                  _HeroCard(connected: connected, onStart: widget.onStartSession, onNavigate: onNavigate),
                   const SizedBox(height: 24),
                   // Stats row — wraps on narrow screens
                   if (isCompact)
@@ -93,17 +129,31 @@ class HomeScreen extends StatelessWidget {
                   // Bottom row — stacks on narrow
                   if (isCompact)
                     Column(children: [
-                      _RecentTripsTable(),
+                      _RecentTripsTable(
+                        tripHistory: _tripHistory,
+                        onRefresh: _fetchTrips,
+                        onNavigate: onNavigate,
+                      ),
                       const SizedBox(height: 24),
-                      _GlobalCalibrationCard(),
+                      _GlobalCalibrationCard(
+                        client: client,
+                        onNavigate: onNavigate,
+                      ),
                     ])
                   else
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Expanded(flex: 7, child: _RecentTripsTable()),
+                        Expanded(flex: 7, child: _RecentTripsTable(
+                          tripHistory: _tripHistory,
+                          onRefresh: _fetchTrips,
+                          onNavigate: onNavigate,
+                        )),
                         const SizedBox(width: 24),
-                        Expanded(flex: 5, child: _GlobalCalibrationCard()),
+                        Expanded(flex: 5, child: _GlobalCalibrationCard(
+                          client: client,
+                          onNavigate: onNavigate,
+                        )),
                       ],
                     ),
                 ],
@@ -119,9 +169,10 @@ class HomeScreen extends StatelessWidget {
 // ─── Hero Card ──────────────────────────────────────────────────────────────
 
 class _HeroCard extends StatelessWidget {
-  const _HeroCard({required this.connected, required this.onStart});
+  const _HeroCard({required this.connected, required this.onStart, this.onNavigate});
   final bool connected;
   final VoidCallback onStart;
+  final void Function(int)? onNavigate;
 
   @override
   Widget build(BuildContext context) {
@@ -145,9 +196,9 @@ class _HeroCard extends StatelessWidget {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                     decoration: BoxDecoration(
-                      color: AppColors.focusedGreen.withOpacity(0.1),
+                      color: AppColors.focusedGreen.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: AppColors.focusedGreen.withOpacity(0.2)),
+                      border: Border.all(color: AppColors.focusedGreen.withValues(alpha: 0.2)),
                     ),
                     child: Row(mainAxisSize: MainAxisSize.min, children: [
                       Container(width: 6, height: 6, decoration: BoxDecoration(color: AppColors.focusedGreen, shape: BoxShape.circle)),
@@ -176,7 +227,7 @@ class _HeroCard extends StatelessWidget {
                       ),
                       const SizedBox(width: 16),
                       OutlinedButton(
-                        onPressed: () {},
+                        onPressed: () => onNavigate?.call(2),
                         style: OutlinedButton.styleFrom(
                           foregroundColor: AppColors.textPrimary,
                           side: const BorderSide(color: AppColors.textMuted),
@@ -220,7 +271,7 @@ class _GlowingButton extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         boxShadow: onPressed != null ? [
           BoxShadow(
-            color: AppColors.textPrimary.withOpacity(0.12),
+            color: AppColors.textPrimary.withValues(alpha: 0.12),
             blurRadius: 18,
           ),
         ] : null,
@@ -317,9 +368,9 @@ class _SystemStatusCard extends StatelessWidget {
             Container(
               width: 56, height: 56,
               decoration: BoxDecoration(
-                color: AppColors.focusedGreen.withOpacity(0.1),
+                color: AppColors.focusedGreen.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: AppColors.focusedGreen.withOpacity(0.2)),
+                border: Border.all(color: AppColors.focusedGreen.withValues(alpha: 0.2)),
               ),
               child: Icon(Icons.health_and_safety, color: AppColors.focusedGreen, size: 28),
             ),
@@ -333,6 +384,16 @@ class _SystemStatusCard extends StatelessWidget {
 // ─── Recent Trips Table ─────────────────────────────────────────────────────
 
 class _RecentTripsTable extends StatelessWidget {
+  const _RecentTripsTable({
+    required this.tripHistory,
+    required this.onRefresh,
+    this.onNavigate,
+  });
+
+  final List<Map<String, dynamic>> tripHistory;
+  final Future<void> Function() onRefresh;
+  final void Function(int)? onNavigate;
+
   @override
   Widget build(BuildContext context) {
     return _HoverLift(
@@ -352,7 +413,14 @@ class _RecentTripsTable extends StatelessWidget {
                 SizedBox(width: 8),
                 Text('Recent Trip Analytics', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
               ]),
-              TextButton(onPressed: () {}, child: const Text('View All Logs', style: TextStyle(fontSize: 14, color: AppColors.textSecondary))),
+              TextButton(
+                onPressed: () {
+                  // When session is active this goes to Trip Analytics (tab 1);
+                  // otherwise also tab 1 since analytics is view-only.
+                  onNavigate?.call(1);
+                },
+                child: const Text('View All Logs', style: TextStyle(fontSize: 14, color: AppColors.textSecondary)),
+              ),
             ]),
             const SizedBox(height: 16),
             // Column headers
@@ -360,17 +428,42 @@ class _RecentTripsTable extends StatelessWidget {
               padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
               decoration: BoxDecoration(color: AppColors.surface0, borderRadius: BorderRadius.circular(8)),
               child: Row(children: [
-                Expanded(flex: 3, child: _headerCell('DATE / ROUTE')),
-                Expanded(flex: 2, child: _headerCell('DRIVER ID')),
+                Expanded(flex: 3, child: _headerCell('SESSION')),
                 Expanded(flex: 2, child: _headerCell('DURATION')),
-                Expanded(flex: 2, child: _headerCell('SAFETY SCORE', align: TextAlign.end)),
+                Expanded(flex: 2, child: _headerCell('AVG ATTENTION')),
+                Expanded(flex: 2, child: _headerCell('SAFETY', align: TextAlign.end)),
               ]),
             ),
             const SizedBox(height: 4),
-            // Data rows
-            _TripRow(route: 'Oct 04 - Route North-B', ago: '2h ago', driver: 'DRV-7742', duration: '04h 15m', score: '98/100', scoreColor: AppColors.focusedGreen, isFirst: true),
-            _TripRow(route: 'Oct 04 - Route East-1', ago: '5h ago', driver: 'DRV-3319', duration: '06h 30m', score: '85/100', scoreColor: AppColors.alertAmber),
-            _TripRow(route: 'Oct 03 - Route West-C', ago: 'Yesterday', driver: 'DRV-9012', duration: '03h 45m', score: '95/100', scoreColor: AppColors.focusedGreen, isLast: true),
+            if (tripHistory.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                child: Center(
+                  child: Text(
+                    'No trip history yet — start a session to see data here.',
+                    style: TextStyle(fontSize: 13, color: AppColors.textMuted),
+                  ),
+                ),
+              )
+            else
+              ...tripHistory.take(5).map((trip) {
+                final dur = trip['duration_s'] as double? ?? 0;
+                final durMin = (dur / 60).floor();
+                final durSec = (dur % 60).floor();
+                final avgAtt = (trip['avg_attention'] as num?)?.toDouble() ?? 100.0;
+                final score = (trip['safety_score'] as num?)?.toDouble() ?? 100.0;
+                final sid = trip['session_id'] as String? ?? 'unknown';
+                final shortSid = sid.length > 8 ? sid.substring(0, 8) : sid;
+                final scoreColor = score >= 80 ? AppColors.focusedGreen
+                    : score >= 60 ? AppColors.alertAmber : AppColors.alertRed;
+                return _TripRow(
+                  route: shortSid,
+                  duration: '${durMin}m ${durSec}s',
+                  score: '${score.toInt()}/100',
+                  scoreColor: scoreColor,
+                  attention: '${avgAtt.toStringAsFixed(0)}/100',
+                );
+              }),
           ],
         ),
       ),
@@ -385,10 +478,9 @@ class _RecentTripsTable extends StatelessWidget {
 }
 
 class _TripRow extends StatelessWidget {
-  const _TripRow({required this.route, required this.ago, required this.driver, required this.duration, required this.score, required this.scoreColor, this.isFirst = false, this.isLast = false});
-  final String route, ago, driver, duration, score;
+  const _TripRow({required this.route, required this.duration, required this.score, required this.scoreColor, required this.attention});
+  final String route, duration, score, attention;
   final Color scoreColor;
-  final bool isFirst, isLast;
 
   @override
   Widget build(BuildContext context) {
@@ -396,21 +488,20 @@ class _TripRow extends StatelessWidget {
       color: Colors.transparent,
       child: InkWell(
         borderRadius: BorderRadius.circular(8),
-        hoverColor: AppColors.surface2.withOpacity(0.5),
+        hoverColor: AppColors.surface2.withValues(alpha: 0.5),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
           child: Row(children: [
             Expanded(flex: 3, child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(route, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: AppColors.textPrimary)),
-              Text(ago, style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+              Text(route, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500, fontFamily: 'monospace', color: AppColors.textPrimary)),
             ])),
-            Expanded(flex: 2, child: Text(driver, style: const TextStyle(fontSize: 13, fontFamily: 'monospace', color: AppColors.textSecondary))),
             Expanded(flex: 2, child: Text(duration, style: const TextStyle(fontSize: 14, color: AppColors.textSecondary))),
+            Expanded(flex: 2, child: Text(attention, style: const TextStyle(fontSize: 14, color: AppColors.textSecondary))),
             Expanded(flex: 2, child: Align(
               alignment: Alignment.centerRight,
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(color: scoreColor.withOpacity(0.1), borderRadius: BorderRadius.circular(6)),
+                decoration: BoxDecoration(color: scoreColor.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6)),
                 child: Text(score, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: scoreColor)),
               ),
             )),
@@ -424,6 +515,10 @@ class _TripRow extends StatelessWidget {
 // ─── Global Calibration Card ────────────────────────────────────────────────
 
 class _GlobalCalibrationCard extends StatelessWidget {
+  const _GlobalCalibrationCard({required this.client, this.onNavigate});
+  final MonitoringClient client;
+  final void Function(int)? onNavigate;
+
   @override
   Widget build(BuildContext context) {
     return _HoverLift(
@@ -438,11 +533,12 @@ class _GlobalCalibrationCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-              const Row(children: [
+              const Flexible(child: Row(mainAxisSize: MainAxisSize.min, children: [
                 Icon(Icons.tune, size: 20, color: AppColors.textSecondary),
                 SizedBox(width: 8),
                 Text('Global Calibration', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
-              ]),
+              ])),
+              const SizedBox(width: 8),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(color: AppColors.surface2, borderRadius: BorderRadius.circular(4)),
@@ -459,7 +555,7 @@ class _GlobalCalibrationCard extends StatelessWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Row(children: [
+                Row(mainAxisSize: MainAxisSize.min, children: [
                   Container(width: 40, height: 40,
                     decoration: BoxDecoration(color: AppColors.surface2, shape: BoxShape.circle),
                     child: const Icon(Icons.camera_front, size: 20, color: AppColors.textSecondary)),
@@ -469,7 +565,13 @@ class _GlobalCalibrationCard extends StatelessWidget {
                     Text('Auto-calibrated', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
                   ]),
                 ]),
-                TextButton(onPressed: () {}, child: const Text('Verify')),
+                TextButton(
+                  onPressed: () {
+                    // Navigate to Settings tab which has the calibration card
+                    onNavigate?.call(2);
+                  },
+                  child: const Text('Verify'),
+                ),
               ],
             ),
           ],

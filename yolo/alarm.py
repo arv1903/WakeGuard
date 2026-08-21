@@ -6,9 +6,22 @@ Adapt for Linux/macOS by replacing with playsound / pygame.
 """
 
 import ctypes
+import os
+import sys
 
 _IsPlayingAlarm = False
 _IsMuted = False
+
+
+def _get_sound_path() -> str:
+    candidates = [
+        "alert.mp3",
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "alert.mp3"),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return os.path.abspath(c)
+    return "alert.mp3"
 
 
 def SetAlarmMuted(muted: bool) -> None:
@@ -30,15 +43,28 @@ def UpdateAlarm(Active):
     if _IsMuted:
         return
 
+    if sys.platform != "win32":
+        # Non-Windows stub: audio alarm is skipped cleanly without crashing.
+        _IsPlayingAlarm = bool(Active)
+        return
+
+    sound_path = _get_sound_path()
+
     if Active and not _IsPlayingAlarm:
-        ctypes.windll.winmm.mciSendStringW("close alarm", None, 0, None)
-        ctypes.windll.winmm.mciSendStringW(
-            'open "alert.mp3" alias alarm', None, 0, None
-        )
-        ctypes.windll.winmm.mciSendStringW("play alarm repeat", None, 0, None)
-        _IsPlayingAlarm = True
+        try:
+            ctypes.windll.winmm.mciSendStringW("close alarm", None, 0, None)
+            ctypes.windll.winmm.mciSendStringW(
+                f'open "{sound_path}" alias alarm', None, 0, None
+            )
+            ctypes.windll.winmm.mciSendStringW("play alarm repeat", None, 0, None)
+            _IsPlayingAlarm = True
+        except Exception:
+            _IsPlayingAlarm = False
 
     elif not Active and _IsPlayingAlarm:
-        ctypes.windll.winmm.mciSendStringW("stop alarm", None, 0, None)
-        ctypes.windll.winmm.mciSendStringW("close alarm", None, 0, None)
+        try:
+            ctypes.windll.winmm.mciSendStringW("stop alarm", None, 0, None)
+            ctypes.windll.winmm.mciSendStringW("close alarm", None, 0, None)
+        except Exception:
+            pass
         _IsPlayingAlarm = False

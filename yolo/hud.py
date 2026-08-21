@@ -32,11 +32,24 @@ class HudState:
     face_lost_progress: float = 0.0
 
 
+_FONT_NAMES = [
+    "DejaVuSans-Bold.ttf",
+    "segoeuib.ttf",
+    "segoeui.ttf",
+    "arialbd.ttf",
+    "arial.ttf",
+    "calibrib.ttf",
+    "calibri.ttf",
+]
+
+
 def _font(size):
-    try:
-        return ImageFont.truetype("DejaVuSans-Bold.ttf", size)
-    except OSError:
-        return ImageFont.load_default()
+    for name in _FONT_NAMES:
+        try:
+            return ImageFont.truetype(name, size)
+        except OSError:
+            pass
+    return ImageFont.load_default()
 
 
 # Static panel (rounded translucent sidebar + title), cached per size.
@@ -56,20 +69,29 @@ def _static_panel(w, h, panel_w):
     return _panel_cache[key]
 
 
+_vignette_cache = {}
+
+
 def _vignette(size, alpha):
-    """Radial-gradient darkening layer with the given max alpha."""
+    """Radial-gradient darkening layer with the given max alpha, cached."""
+    key = (size, int(alpha))
+    if key in _vignette_cache:
+        return _vignette_cache[key]
     w, h = size
     layer = Image.new("RGBA", size, (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
     cx, cy = w / 2, h / 2
     max_r = math.hypot(cx, cy)
-    steps = 24
+    steps = 16
     for i in range(steps):
         r0 = max_r * (1 - (i + 1) / steps)
         r1 = max_r * (1 - i / steps)
         a = int(alpha * (1 - i / steps) ** 2)
         d.ellipse((cx - r1, cy - r1, cx + r1, cy + r1), fill=(0, 0, 0, a))
         d.ellipse((cx - r0, cy - r0, cx + r0, cy + r0), fill=(0, 0, 0, 0))
+    if len(_vignette_cache) > 30:
+        _vignette_cache.clear()
+    _vignette_cache[key] = layer
     return layer
 
 

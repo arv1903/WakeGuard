@@ -1,6 +1,6 @@
 import pytest
 
-from yolo.calibration import CalibrationProfile, RunCalibration
+from yolo.calibration import CalibrationProfile, CalibrationSession, RunCalibration
 
 
 def test_profile_roundtrip(tmp_path):
@@ -28,3 +28,26 @@ def test_run_calibration_averages_pose():
 def test_run_calibration_raises_without_valid_pose():
     with pytest.raises(RuntimeError):
         RunCalibration(lambda: {"valid": False}, duration=0.1)
+
+
+def test_calibration_session_non_blocking():
+    session = CalibrationSession(duration=2.0)
+    assert not session.is_active
+    assert not session.is_finished
+    session.start(now=100.0)
+    assert session.is_active
+
+    # Step 1: at t=101.0 (50% progress)
+    p1 = session.update({"pitch": 12.0, "yaw": -4.0, "roll": 2.0, "valid": True}, now=101.0)
+    assert p1 == pytest.approx(0.5)
+    assert not session.is_finished
+
+    # Step 2: at t=102.0 (100% progress)
+    p2 = session.update({"pitch": 10.0, "yaw": -6.0, "roll": 4.0, "valid": True}, now=102.0)
+    assert p2 == pytest.approx(1.0)
+    assert session.is_finished
+
+    profile = session.finish()
+    assert profile.neutral_pitch == pytest.approx(11.0)
+    assert profile.neutral_yaw == pytest.approx(-5.0)
+    assert profile.neutral_roll == pytest.approx(3.0)

@@ -63,15 +63,20 @@ class _SnapshotSmoother {
     _roll      = _ema(_roll,      raw.roll,      _aPose);
 
     // Status hysteresis — smoothed severity must cross thresholds to change
-    // the displayed text, preventing rapid flicker.
+    // the displayed text, preventing rapid flicker while alerting immediately
+    // on critical events.
     _smoothedSeverity = _ema(_smoothedSeverity.toDouble(), raw.alertSeverity.toDouble(), _aSeverity).round();
     final newStatus = _statusFromSeverity(_smoothedSeverity, raw);
     if (newStatus != _displayedStatus) {
-      // Only update if the new status has been stable for a few frames.
-      _pendingCount++;
-      if (_pendingCount >= 3) {
+      if (raw.alertSeverity >= 3 || _smoothedSeverity >= 3) {
         _displayedStatus = newStatus;
         _pendingCount = 0;
+      } else {
+        _pendingCount++;
+        if (_pendingCount >= 2) {
+          _displayedStatus = newStatus;
+          _pendingCount = 0;
+        }
       }
     } else {
       _pendingCount = 0;
@@ -433,6 +438,26 @@ class MonitoringClient extends ChangeNotifier {
       throw HttpException('Summary returned ${response.statusCode}: $body');
     }
     return jsonDecode(body) as Map<String, dynamic>;
+  }
+
+  Future<List<Map<String, dynamic>>> fetchTripHistory() async {
+    try {
+      final request = await _http.getUrl(
+        Uri.parse('$_baseUrl/api/v1/sessions/history'),
+      );
+      _headers().forEach(request.headers.add);
+      final response = await request.close();
+      final body = await response.transform(utf8.decoder).join();
+      if (response.statusCode != HttpStatus.ok) {
+        return [];
+      }
+      final data = jsonDecode(body) as Map<String, dynamic>;
+      final list = data['history'] as List<dynamic>?;
+      if (list == null) return [];
+      return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    } catch (_) {
+      return [];
+    }
   }
 
   Future<void> forgetDevice() async {
