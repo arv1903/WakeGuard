@@ -17,9 +17,12 @@ def test_trigger_enabled_enqueues_image_and_message():
     telegram._Queue.queue.clear()
     telegram.TriggerTelegramPhoto("img", Message="ALERT!", Cooldown=1.0)
     assert telegram._Queue.qsize() == 1
-    image, message = telegram._Queue.get_nowait()
+    item = telegram._Queue.get_nowait()
+    # New 3-tuple (image, message, cooldown) for per-call cooldown fix
+    image, message = item[0], item[1]
     assert image == "img"
     assert message == "ALERT!"
+    assert item[2] == 1.0
 
 
 def test_build_caption_includes_time_and_location():

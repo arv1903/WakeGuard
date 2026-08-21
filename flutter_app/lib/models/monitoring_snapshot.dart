@@ -30,10 +30,14 @@ class MonitoringSnapshot {
     required this.alertSeverity,
     required this.alarmMuted,
     required this.fps,
+    required this.calibrationState,
+    required this.calibrationProgress,
+    required this.calibrationError,
+    required this.calibrationValidSamples,
   });
 
   factory MonitoringSnapshot.initial() => const MonitoringSnapshot(
-        schemaVersion: 1,
+        schemaVersion: 2,
         sequence: 0,
         serverId: '',
         timestamp: 0,
@@ -63,6 +67,10 @@ class MonitoringSnapshot {
         alertSeverity: 0,
         alarmMuted: false,
         fps: 0,
+        calibrationState: 'idle',
+        calibrationProgress: 0,
+        calibrationError: null,
+        calibrationValidSamples: 0,
       );
 
   factory MonitoringSnapshot.fromJson(Map<String, dynamic> json) {
@@ -106,6 +114,11 @@ class MonitoringSnapshot {
       alertSeverity: (json['alert_severity'] as num?)?.toInt() ?? 0,
       alarmMuted: flag('alarm_muted'),
       fps: number('fps'),
+      calibrationState: json['calibration_state'] as String? ?? 'idle',
+      calibrationProgress: number('calibration_progress'),
+      calibrationError: json['calibration_error'] as String?,
+      calibrationValidSamples:
+          (json['calibration_valid_samples'] as num?)?.toInt() ?? 0,
     );
   }
 
@@ -139,6 +152,10 @@ class MonitoringSnapshot {
   final int alertSeverity;
   final bool alarmMuted;
   final double fps;
+  final String calibrationState;
+  final double calibrationProgress;
+  final String? calibrationError;
+  final int calibrationValidSamples;
 
   String get status {
     if (alertSeverity >= 4) return 'Critical';

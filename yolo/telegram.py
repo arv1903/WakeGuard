@@ -146,12 +146,18 @@ def _Run() -> None:
     global _LastSent
     while not _Stop.is_set():
         try:
-            image, message = _Queue.get(timeout=0.5)
+            item = _Queue.get(timeout=0.5)
         except queue.Empty:
             continue
+        # Unpack: (image, message, cooldown) — old callers may have 2-tuple
+        if len(item) == 3:
+            image, message, cooldown = item
+        else:
+            image, message = item
+            cooldown = TelegramCooldown
         with _CooldownLock:
             now = time.time()
-            if now - _LastSent < TelegramCooldown:
+            if now - _LastSent < cooldown:
                 continue                       # still in cooldown; drop item
             _LastSent = now
         # Keep the alert photo prompt: bounded lookup (cached results are
@@ -165,13 +171,16 @@ def _Run() -> None:
                 _SendLocation(token, chat_id, location)
 
 
-def TriggerTelegramPhoto(image, Message=None, Cooldown=TelegramCooldown) -> None:
-    """Enqueue a full-frame snapshot. Returns immediately; the worker sends it."""
-    global TelegramCooldown
-    TelegramCooldown = Cooldown
+def TriggerTelegramPhoto(image, Message=None, Cooldown=None) -> None:
+    """Enqueue a full-frame snapshot. Returns immediately; the worker sends it.
+
+    Cooldown is per-call (not global) to avoid races when the API mutates it.
+    """
+    if Cooldown is None:
+        Cooldown = TelegramCooldown
     if not _Enabled:
         return
     try:
-        _Queue.put_nowait((image, Message))
+        _Queue.put_nowait((image, Message, Cooldown))
     except queue.Full:
         pass  # drop oldest alerts rather than block

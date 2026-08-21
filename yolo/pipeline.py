@@ -66,8 +66,11 @@ class CameraThread(threading.Thread):
         self._stop = threading.Event()
         self._flip = flip
         self._cap = cv2.VideoCapture(source)
-        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        ok_w = self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        ok_h = self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        if not ok_w or not ok_h:
+            print(f"[camera] warning: could not set capture size to {width}x{height} "
+                  f"(backend returned {ok_w}/{ok_h}); using driver default")
 
     def run(self) -> None:
         failures = 0
@@ -91,6 +94,9 @@ class CameraThread(threading.Thread):
 
     def latest_frame(self):
         return self._latest.latest()
+
+    def wait_for_frame(self, last_version: int, timeout: float | None = 0.5):
+        return self._latest.wait_for_new(last_version, timeout=timeout)
 
 
 class InferenceThread(threading.Thread):
@@ -122,10 +128,10 @@ class InferenceThread(threading.Thread):
 
     def run(self) -> None:
         failures = 0
+        last_version = -1
         while not self._stop.is_set():
-            frame = self._camera.latest_frame()
+            frame, last_version = self._camera.wait_for_frame(last_version, timeout=0.5)
             if frame is None:
-                self._stop.wait(0.005)
                 continue
             try:
                 self._publish(self._infer(frame))
@@ -213,6 +219,9 @@ class InferenceThread(threading.Thread):
 
     def latest_result(self) -> FrameResult | None:
         return self._latest.latest()
+
+    def wait_for_result(self, last_version: int, timeout: float | None = 0.5):
+        return self._latest.wait_for_new(last_version, timeout=timeout)
 
     def stats(self) -> dict:
         return self._stats.snapshot()

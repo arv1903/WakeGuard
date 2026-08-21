@@ -26,10 +26,15 @@ def _get_sound_path() -> str:
 
 def SetAlarmMuted(muted: bool) -> None:
     """Mute/unmute the alarm. Muting stops any active playback."""
-    global _IsMuted
+    global _IsMuted, _IsPlayingAlarm
     _IsMuted = muted
     if muted:
-        UpdateAlarm(False)
+        # Directly clear playing flag even on non-Windows stub; UpdateAlarm
+        # would return early due to _IsMuted, leaving flag stale.
+        if sys.platform != "win32":
+            _IsPlayingAlarm = False
+        else:
+            UpdateAlarm(False)
 
 
 def UpdateAlarm(Active):
@@ -41,6 +46,11 @@ def UpdateAlarm(Active):
     global _IsPlayingAlarm
 
     if _IsMuted:
+        # Ensure flag is cleared even while muted — SetAlarmMuted already
+        # clears it on entry, but UpdateAlarm(False) while muted must also
+        # clear the stale True left from pre-mute playback.
+        if not Active:
+            _IsPlayingAlarm = False
         return
 
     if sys.platform != "win32":

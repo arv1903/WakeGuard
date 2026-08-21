@@ -23,19 +23,29 @@ class LocalBackendProcess {
 
   bool get isRunning => _process != null;
 
-  Future<bool> start() async {
+  Future<bool> start({int? port, String host = '127.0.0.1'}) async {
     if (!supported || isRunning) return isRunning;
+    // Derive port from API_URL env if not explicitly passed (fixes hardcoded 8765 vs baseUrl mismatch)
+    int effectivePort = port ?? 8765;
+    if (port == null) {
+      try {
+        const apiUrl = String.fromEnvironment('API_URL',
+            defaultValue: 'http://127.0.0.1:8765');
+        final uri = Uri.tryParse(apiUrl);
+        if (uri != null && uri.hasPort) effectivePort = uri.port;
+      } catch (_) {}
+    }
     try {
       final process = await Process.start(
         pythonExecutable,
-        const [
+        [
           'main.py',
           '--headless',
           '--api',
           '--api-host',
-          '127.0.0.1',
+          host,
           '--api-port',
-          '8765',
+          effectivePort.toString(),
         ],
         workingDirectory: backendRoot,
       );

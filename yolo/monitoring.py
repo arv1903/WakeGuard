@@ -11,7 +11,7 @@ import time
 from typing import Any
 
 
-SNAPSHOT_SCHEMA_VERSION = 1
+SNAPSHOT_SCHEMA_VERSION = 2
 
 _ALERT_SEVERITIES = {
     "MICROSLEEP": 4,
@@ -19,6 +19,7 @@ _ALERT_SEVERITIES = {
     "FATIGUE": 3,
     "FACE LOST": 3,
     "DISTRACTED": 2,
+    "LOW BLINK RATE": 2,
     "DROWSINESS": 1,
 }
 
@@ -32,6 +33,25 @@ def GetAlertSeverity(alert: str | None) -> int:
         if label in upper:
             return severity
     return 1
+
+
+def SelectAlert(messages: dict[str, str], *, microsleep: bool = False,
+                combined: bool = False, perclos: bool = False,
+                face_lost: bool = False, head_away: bool = False,
+                low_blink: bool = False, yolo: bool = False) -> str | None:
+    """Select the highest-priority active alert."""
+    for key, active in (
+        ("microsleep", microsleep),
+        ("combined", combined),
+        ("perclos", perclos),
+        ("face_lost", face_lost),
+        ("head_away", head_away),
+        ("low_blink", low_blink),
+        ("yolo", yolo),
+    ):
+        if active:
+            return messages[key]
+    return None
 
 
 @dataclass(frozen=True)
@@ -71,6 +91,10 @@ class MonitoringSnapshot:
     alert_severity: int = 0
     alarm_muted: bool = False
     fps: float = 0.0
+    calibration_state: str = "idle"
+    calibration_progress: float = 0.0
+    calibration_error: str | None = None
+    calibration_valid_samples: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         """Return the stable wire representation used by API clients."""

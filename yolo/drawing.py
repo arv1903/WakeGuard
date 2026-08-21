@@ -17,6 +17,7 @@ from .config import (
     HeadPitchFocusedMax,
     HeadYawThreshold,
     HeadDownPitch,
+    focal_length,
 )
 
 
@@ -244,7 +245,7 @@ def DrawHeadAxes(Frame, Rvec, Tvec, NosePt, AxisLength=60):
         AxisLength (int): Length of each axis arrow in pixels.
     """
     h, w = Frame.shape[:2]
-    focal = w * 1.05
+    focal = focal_length(w)
     cam_matrix = np.array(
         [[focal, 0, w / 2.0], [0, focal, h / 2.0], [0, 0, 1]],
         dtype=np.float64,

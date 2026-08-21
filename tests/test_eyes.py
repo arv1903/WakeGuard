@@ -58,3 +58,33 @@ def test_microsleep_after_threshold():
     bm.update(0.0, now=0.0)
     state = bm.update(0.0, now=2.0)
     assert state["closed"] and state["microsleep"]
+
+
+def test_blink_rate_waits_for_complete_valid_observation_window():
+    bm = BlinkMonitor(rate_window_seconds=10.0)
+    first = bm.update(0.3, now=1.0)
+    almost = bm.update(0.3, now=10.9)
+    ready = bm.update(0.3, now=11.0)
+    assert first["rate_ready"] is False
+    assert almost["rate_ready"] is False
+    assert ready["rate_ready"] is True
+
+
+def test_missing_ear_does_not_advance_blink_observation():
+    bm = BlinkMonitor(rate_window_seconds=10.0)
+    bm.update(0.3, now=1.0)
+    bm.update(None, now=20.0)
+    state = bm.update(0.3, now=21.0)
+    assert state["rate_ready"] is False
+
+
+def test_blink_monitor_reset_clears_rate_history():
+    bm = BlinkMonitor(rate_window_seconds=1.0)
+    bm.update(0.0, now=0.0)
+    bm.update(0.3, now=0.2)
+    bm.update(0.3, now=1.2)
+    assert bm.update(0.3, now=1.3)["rate_ready"] is True
+    bm.reset()
+    state = bm.update(0.3, now=2.0)
+    assert state["blinks_per_min"] == 0
+    assert state["rate_ready"] is False
