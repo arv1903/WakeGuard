@@ -37,7 +37,7 @@ from yolo.config import (
     CalibrationDuration, CalibrationCountdown, ProfilePath,
     SessionLogPath, PilHud,
 )
-from yolo.calibration import CalibrationProfile, RunCalibration
+from yolo.calibration import CalibrationProfile, CalibrationSession, RunCalibration
 from yolo.envfile import LoadEnvFile
 from yolo.diagnostics import RunDiagnostics
 from yolo.session_log import SessionLogger
@@ -220,6 +220,7 @@ def main():
     trip_started_at = time.time()
     api_started_at = time.time()
     snapshot_sequence = 0
+    cal_session: CalibrationSession | None = None
     api_commands = queue.Queue()
     monitoring_store = MonitoringStore()
 
@@ -229,7 +230,11 @@ def main():
 
     def current_summary():
         from yolo.summary import BuildSummary
-        return BuildSummary(args.log)
+        return BuildSummary(args.log, session_id=session_id)
+
+    def current_history():
+        from yolo.summary import BuildSessionHistory
+        return BuildSessionHistory(args.log, limit=10)
 
     def current_session():
         return {
@@ -247,7 +252,7 @@ def main():
             "device_name": os.environ.get("DRIVER_DEVICE_NAME") or platform.node(),
             "platform": platform.system().lower(),
             "started_at": api_started_at,
-            "capabilities": ["events", "jpeg", "mjpeg", "commands", "summary", "pairing"],
+            "capabilities": ["events", "jpeg", "mjpeg", "commands", "summary", "history", "pairing"],
         }
 
     monitoring_api = None
@@ -258,6 +263,7 @@ def main():
             store=monitoring_store,
             command_handler=handle_api_command,
             summary_provider=current_summary,
+            history_provider=current_history,
             metadata_provider=api_metadata,
             session_provider=current_session,
             auth_token=args.api_token,
@@ -303,19 +309,18 @@ def main():
                     if not trip_active:
                         session_id = uuid.uuid4().hex
                         trip_started_at = time.time()
+                        logger.session_start(session_id)
                         _start_pipeline()
-                        # Run calibration on first session if needed
+                        # Run calibration on first session if needed (non-blocking)
                         if _needs_calibration:
-                            try:
-                                print("[session] calibrating neutral head pose...")
-                                profile = RunCalibration(current_pose, duration=CalibrationDuration)
-                                profile.save(ProfilePath)
-                                print(f"[session] calibration saved")
-                            except RuntimeError as exc:
-                                print(f"[session] calibration failed: {exc}")
+                            cal_session = CalibrationSession(duration=CalibrationDuration)
+                            cal_session.start()
+                            print("[session] started non-blocking neutral head pose calibration...")
                     trip_active = True
                     last_log_time = time.monotonic()
                 elif command == "stop_trip":
+                    if trip_active:
+                        logger.session_stop(session_id)
                     trip_active = False
                     _stop_pipeline()
                 elif command == "start_calibration":
@@ -324,13 +329,29 @@ def main():
                         print("[api] calibration duration must be numeric")
                         continue
                     duration = max(1.0, min(float(requested_duration), 30.0))
-                    try:
-                        print("[api] calibration started")
-                        profile = RunCalibration(current_pose, duration=duration)
-                        profile.save(ProfilePath)
-                        print("[api] calibration saved")
-                    except RuntimeError as exc:
-                        print(f"[api] calibration failed: {exc}")
+                    cal_session = CalibrationSession(duration=duration)
+                    cal_session.start()
+                    print(f"[api] started non-blocking calibration ({duration:.1f}s)")
+                elif command == "update_settings":
+                    for k, v in (payload or {}).items():
+                        if k in ("ear_threshold", "EarClosedThreshold"):
+                            blinks._closed_threshold = float(v)
+                            globals()["EarClosedThreshold"] = float(v)
+                        elif k in ("microsleep_duration", "MicrosleepSeconds"):
+                            blinks._microsleep_seconds = float(v)
+                            globals()["MicrosleepSeconds"] = float(v)
+                        elif k in ("pitch_threshold", "HeadDownPitch"):
+                            globals()["HeadDownPitch"] = float(v)
+                        elif k in ("yaw_threshold", "HeadYawThreshold"):
+                            globals()["HeadYawThreshold"] = float(v)
+                        elif k in ("roll_threshold", "HeadRollThreshold"):
+                            globals()["HeadRollThreshold"] = float(v)
+                        elif k == "telegram_enabled":
+                            telegram.SetTelegramEnabled(bool(v))
+                        elif k == "alarm_enabled":
+                            alarm_muted = not bool(v)
+                            SetAlarmMuted(alarm_muted)
+                    print(f"[api] updated settings: {payload}")
 
             # When no session is active the pipeline is stopped — just
             # idle and keep draining API commands.
@@ -381,6 +402,19 @@ def main():
                 continue
 
             hp = result.head_pose
+            if cal_session is not None and cal_session.is_active:
+                cal_session.update(hp, Now)
+                if cal_session.is_finished:
+                    try:
+                        profile = cal_session.finish()
+                        profile.save(ProfilePath)
+                        print(f"[calibration] saved profile (pitch={profile.neutral_pitch:.1f}, "
+                              f"yaw={profile.neutral_yaw:.1f}, roll={profile.neutral_roll:.1f})")
+                    except RuntimeError as exc:
+                        print(f"[calibration] failed: {exc}")
+                    cal_session = None
+                    _needs_calibration = False
+
             if hp["valid"]:
                 alpha = PoseSmoothAlpha
                 SmoothedPitch = alpha * hp["pitch"] + (1 - alpha) * SmoothedPitch
@@ -481,7 +515,9 @@ def main():
                 UpdateAlarm(AlertMsg is not None)
 
             # ── Attention (same as original) ──────────────────────
-            raw = ComputeAttentionScore(result.max_drowsy, SmoothedPitch, SmoothedYaw)
+            rel_pitch = SmoothedPitch - profile.neutral_pitch
+            rel_yaw = SmoothedYaw - profile.neutral_yaw
+            raw = ComputeAttentionScore(result.max_drowsy, rel_pitch, rel_yaw)
             SmoothedAttention = AttentionSmoothAlpha * SmoothedAttention + (1 - AttentionSmoothAlpha) * raw
             IsFocused = (SmoothedAttention >= AttentionFocusedMin and not HeadDown
                          and not LookingAway and result.max_drowsy < YoloDrowsyWeak
@@ -536,7 +572,8 @@ def main():
             if trip_active and Now - last_log_time >= 1.0:
                 logger.frame_sample(SmoothedAttention, perclos_now, ema_now,
                                     SmoothedPitch, SmoothedYaw, SmoothedRoll,
-                                    hp["valid"], AlertMsg)
+                                    hp["valid"], AlertMsg,
+                                    blinks_per_min=blink_state["blinks_per_min"])
                 attention_history.append(SmoothedAttention)
                 last_log_time = Now
 

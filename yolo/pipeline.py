@@ -108,13 +108,17 @@ class InferenceThread(threading.Thread):
         self._stop = threading.Event()
         self._frame_counter = 0
         self._stats = PerfStats()
-        # Last YOLO detection, carried forward while throttled so the
-        # consumer never sees a false "face lost" on skipped frames.
+        # Last YOLO detection and head pose, carried forward while throttled so
+        # the consumer never sees false "face lost" or resets timers on skipped frames.
         self._last_boxes = []
         self._last_max_drowsy = 0.0
         self._last_max_alert = 0.0
         self._last_face_found = False
         self._last_ear = None
+        self._last_head_pose = {
+            "pitch": 0.0, "yaw": 0.0, "roll": 0.0,
+            "valid": False, "rvec": None, "tvec": None, "nose_pt": None,
+        }
 
     def run(self) -> None:
         failures = 0
@@ -154,6 +158,9 @@ class InferenceThread(threading.Thread):
                 # No face: forget the stale EAR so blink/microsleep logic
                 # never trusts a closure that is no longer observable.
                 self._last_ear = None
+            self._last_head_pose = dict(result.head_pose)
+        else:
+            result.head_pose = dict(self._last_head_pose)
         # Persist EAR across throttled pose frames (stable for blink tracking).
         result.ear = self._last_ear
         self._stats.tock("pose")

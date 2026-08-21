@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../theme.dart';
 
@@ -10,9 +11,9 @@ class PostTripSummaryDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final tripDuration = summary['trip_duration_s'] as num? ?? 0;
-    final avgAttention = summary['avg_attention'] as num? ?? 0;
-    final maxPerclos = summary['max_perclos'] as num? ?? 0;
+    final tripDuration = summary['trip_duration_s'] as num? ?? summary['duration'] as num? ?? 0;
+    final avgAttention = summary['avg_attention'] as num? ?? summary['attention_avg'] as num? ?? 0;
+    final maxPerclos = summary['max_perclos'] as num? ?? summary['perclos_max'] as num? ?? 0;
     final alertCount = summary['alert_count'] as num? ?? 0;
     final blinkRate = summary['avg_blinks_per_min'] as num? ?? 0;
 
@@ -36,7 +37,7 @@ class PostTripSummaryDialog extends StatelessWidget {
             children: [
               Row(children: [
                 Container(width: 40, height: 40,
-                  decoration: BoxDecoration(color: AppColors.focusedGreen.withOpacity(0.1), borderRadius: BorderRadius.circular(12)),
+                  decoration: BoxDecoration(color: AppColors.focusedGreen.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(12)),
                   child: const Icon(Icons.emoji_events_outlined, color: AppColors.focusedGreen, size: 22)),
                 const SizedBox(width: 16),
                 const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -117,17 +118,28 @@ class PostTripSummaryDialog extends StatelessWidget {
   }
 
   void _exportCsv(BuildContext context) {
+    final tripDuration = summary['trip_duration_s'] as num? ?? summary['duration'] as num? ?? 0;
+    final avgAttention = summary['avg_attention'] as num? ?? summary['attention_avg'] as num? ?? 0;
+    final maxPerclos = summary['max_perclos'] as num? ?? summary['perclos_max'] as num? ?? 0;
+    final alertCount = summary['alert_count'] as num? ?? 0;
+    final blinkRate = summary['avg_blinks_per_min'] as num? ?? 0;
+
     final rows = <String>[
       'Metric,Value',
-      'Trip Duration (s),${summary['trip_duration_s'] ?? 0}',
-      'Avg Attention,${summary['avg_attention'] ?? 0}',
-      'Max PERCLOS,${summary['max_perclos'] ?? 0}',
-      'Alert Count,${summary['alert_count'] ?? 0}',
-      'Avg Blinks/min,${summary['avg_blinks_per_min'] ?? 0}',
+      'Trip Duration (s),$tripDuration',
+      'Avg Attention,$avgAttention',
+      'Max PERCLOS,$maxPerclos',
+      'Alert Count,$alertCount',
+      'Avg Blinks/min,$blinkRate',
     ];
     final csv = rows.join('\n');
+    Clipboard.setData(ClipboardData(text: csv));
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('CSV ready (${csv.length} bytes). File export coming soon.')),
+      const SnackBar(
+        content: Text('Trip summary CSV copied to clipboard.'),
+        backgroundColor: AppColors.surface2,
+        behavior: SnackBarBehavior.floating,
+      ),
     );
   }
 }
@@ -168,7 +180,7 @@ class _ScorePainter extends CustomPainter {
     final maxSweep = 1.5 * math.pi;
     final sweep = maxSweep * (score / 100);
     canvas.drawArc(rect, -3 * math.pi / 4, sweep, false, Paint()
-      ..color = color.withOpacity(0.2)..style = PaintingStyle.stroke..strokeWidth = 12..strokeCap = StrokeCap.round..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4));
+      ..color = color.withValues(alpha: 0.2)..style = PaintingStyle.stroke..strokeWidth = 12..strokeCap = StrokeCap.round..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4));
     canvas.drawArc(rect, -3 * math.pi / 4, sweep, false, Paint()
       ..color = color..style = PaintingStyle.stroke..strokeWidth = 6..strokeCap = StrokeCap.round);
   }

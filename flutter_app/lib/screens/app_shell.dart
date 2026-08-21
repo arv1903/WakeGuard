@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../services/monitoring_client.dart';
 import '../theme.dart';
@@ -69,11 +70,11 @@ class _AppShellState extends State<AppShell> {
   }
 
   void _tickClock() {
-    final now = DateTime.now().toUtc().add(const Duration(hours: 7));
+    final now = DateTime.now(); // system local time, no hardcoded offset
     final hh = now.hour.toString().padLeft(2, '0');
     final mm = now.minute.toString().padLeft(2, '0');
     final ss = now.second.toString().padLeft(2, '0');
-    _clockText = '$hh:$mm:$ss WIB';
+    _clockText = '$hh:$mm:$ss';
     const months = ['', 'JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
     _dateText = '${now.day.toString().padLeft(2, '0')} ${months[now.month]} ${now.year}';
     if (mounted) setState(() {});
@@ -119,34 +120,49 @@ class _AppShellState extends State<AppShell> {
     final wide = MediaQuery.sizeOf(context).width >= 880;
     final showSidebar = _isSessionActive && wide;
 
-    return Scaffold(
-      body: Row(
-        children: [
-          if (showSidebar)
-            _CompactSidebar(
-              selectedIndex: _selectedIndex,
-              isSessionActive: _isSessionActive,
-              connected: _lastConnected ?? false,
-              onSelect: (i) => setState(() => _selectedIndex = i),
-            ),
-          Expanded(
-            child: Column(
-              children: [
-                _ConnectionBanner(msg: _connectionBannerMsg),
-                _TopHeader(
-                  client: widget.client,
-                  isSessionActive: _isSessionActive,
-                  clockText: _clockText,
-                  dateText: _dateText,
-                  onEndSession: _isSessionActive ? _endSession : null,
-                  onNavigate: _isSessionActive ? null : (i) => setState(() => _selectedIndex = i),
+    return CallbackShortcuts(
+      bindings: <ShortcutActivator, VoidCallback>{
+        if (_isSessionActive) ...{
+          const SingleActivator(LogicalKeyboardKey.keyM): () {
+            widget.client.sendCommand('/api/v1/alarm/mute').catchError((_) {});
+          },
+          const SingleActivator(LogicalKeyboardKey.keyC): () {
+            widget.client.sendCommand('/api/v1/calibration/start', {'duration': 4}).catchError((_) {});
+          },
+        },
+      },
+      child: Focus(
+        autofocus: true,
+        child: Scaffold(
+          body: Row(
+            children: [
+              if (showSidebar)
+                _CompactSidebar(
                   selectedIndex: _selectedIndex,
+                  isSessionActive: _isSessionActive,
+                  connected: _lastConnected ?? false,
+                  onSelect: (i) => setState(() => _selectedIndex = i),
                 ),
-                Expanded(child: _buildPage()),
-              ],
-            ),
+              Expanded(
+                child: Column(
+                  children: [
+                    _ConnectionBanner(msg: _connectionBannerMsg),
+                    _TopHeader(
+                      client: widget.client,
+                      isSessionActive: _isSessionActive,
+                      clockText: _clockText,
+                      dateText: _dateText,
+                      onEndSession: _isSessionActive ? _endSession : null,
+                      onNavigate: _isSessionActive ? null : (i) => setState(() => _selectedIndex = i),
+                      selectedIndex: _selectedIndex,
+                    ),
+                    Expanded(child: _buildPage()),
+                  ],
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -182,8 +198,8 @@ class _ConnectionBanner extends StatelessWidget {
         width: double.infinity,
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         color: msg != null && msg!.contains('reconnected')
-            ? AppColors.focusedGreen.withOpacity(0.15)
-            : AppColors.alertAmber.withOpacity(0.15),
+            ? AppColors.focusedGreen.withValues(alpha: 0.15)
+            : AppColors.alertAmber.withValues(alpha: 0.15),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
@@ -264,7 +280,7 @@ class _CompactSidebar extends StatelessWidget {
               decoration: BoxDecoration(
                 color: connected ? AppColors.focusedGreen : AppColors.offlineYellow,
                 shape: BoxShape.circle,
-                boxShadow: [BoxShadow(color: (connected ? AppColors.focusedGreen : AppColors.offlineYellow).withOpacity(0.5), blurRadius: 8)],
+                boxShadow: [BoxShadow(color: (connected ? AppColors.focusedGreen : AppColors.offlineYellow).withValues(alpha: 0.5), blurRadius: 8)],
               )),
           )),
       ]),
@@ -303,7 +319,7 @@ class _SidebarIcon extends StatelessWidget {
       duration: const Duration(milliseconds: 200),
       width: 48, height: 48,
       decoration: BoxDecoration(
-        color: selected ? AppColors.accent.withOpacity(0.12) : Colors.transparent,
+        color: selected ? AppColors.accent.withValues(alpha: 0.12) : Colors.transparent,
         borderRadius: BorderRadius.circular(12),
       ),
       child: Stack(alignment: Alignment.center, children: [
@@ -321,8 +337,8 @@ class _PulsingDot extends StatelessWidget {
   Widget build(BuildContext context) {
     return Stack(alignment: Alignment.center, children: [
       Container(width: 12, height: 12, decoration: BoxDecoration(
-        color: AppColors.alertRed.withOpacity(0.35), shape: BoxShape.circle,
-        boxShadow: [BoxShadow(color: AppColors.alertRed.withOpacity(0.3), blurRadius: 6)])),
+        color: AppColors.alertRed.withValues(alpha: 0.35), shape: BoxShape.circle,
+        boxShadow: [BoxShadow(color: AppColors.alertRed.withValues(alpha: 0.3), blurRadius: 6)])),
       Container(width: 8, height: 8, decoration: BoxDecoration(
         color: AppColors.alertRed, shape: BoxShape.circle,
         border: Border.all(color: AppColors.surface0, width: 1))),
@@ -373,9 +389,9 @@ class _TopHeader extends StatelessWidget {
           Text(dateText, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 1, color: AppColors.textSecondary)),
         ]),
         const SizedBox(width: 24),
-        const Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
-          Text('Chief Analyst', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
-          Text('SUPERVISOR', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 1, color: AppColors.textSecondary)),
+        Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
+          Text('Operator', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+          const Text('DRIVER', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 1, color: AppColors.textSecondary)),
         ]),
         const SizedBox(width: 12),
         Container(width: 32, height: 32,
@@ -398,8 +414,8 @@ class _ConnectionPill extends StatelessWidget {
       decoration: BoxDecoration(color: AppColors.surface2, borderRadius: BorderRadius.circular(20)),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
         Container(width: 8, height: 8, decoration: BoxDecoration(
-          color: color.withOpacity(connected ? 0.9 : 1.0), shape: BoxShape.circle,
-          boxShadow: connected ? [BoxShadow(color: color.withOpacity(0.4), blurRadius: 6)] : null)),
+          color: color.withValues(alpha: connected ? 0.9 : 1.0), shape: BoxShape.circle,
+          boxShadow: connected ? [BoxShadow(color: color.withValues(alpha: 0.4), blurRadius: 6)] : null)),
         const SizedBox(width: 8),
         Text(connected ? 'Backend Connected' : 'Backend Disconnected', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, letterSpacing: 1, color: AppColors.textSecondary)),
       ]),
@@ -415,7 +431,7 @@ class _EndSessionButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(borderRadius: BorderRadius.circular(24),
-        boxShadow: [BoxShadow(color: AppColors.alertRed.withOpacity(0.25), blurRadius: 12)]),
+        boxShadow: [BoxShadow(color: AppColors.alertRed.withValues(alpha: 0.25), blurRadius: 12)]),
       child: ElevatedButton.icon(
         onPressed: onPressed, icon: const Icon(Icons.stop, size: 18),
         label: const Text('END SESSION', style: TextStyle(fontWeight: FontWeight.w700, letterSpacing: 0.5)),
@@ -438,7 +454,7 @@ class _HeaderNavLink extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: selected ? AppColors.accent.withOpacity(0.1) : Colors.transparent,
+      color: selected ? AppColors.accent.withValues(alpha: 0.1) : Colors.transparent,
       borderRadius: BorderRadius.circular(8),
       child: InkWell(onTap: onTap, borderRadius: BorderRadius.circular(8),
         child: Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),

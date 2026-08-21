@@ -304,3 +304,24 @@ def test_authenticated_api_rejects_missing_token():
         assert status == 200
     finally:
         service.stop()
+
+
+def test_settings_command_route(api):
+    service, _ = api
+    received = []
+    service.command_handler = lambda cmd, payload: received.append((cmd, payload)) or {"accepted": True}
+    base = f"http://127.0.0.1:{service.port}"
+    status, payload = _post(base, "/api/v1/settings", {"ear_threshold": 0.22, "microsleep_duration": 1.5})
+    assert status == 200
+    assert payload == {"accepted": True}
+    assert received == [("update_settings", {"ear_threshold": 0.22, "microsleep_duration": 1.5})]
+
+
+def test_session_history_endpoint(api):
+    service, _ = api
+    service.history_provider = lambda: [{"session_id": "s1", "safety_score": 95, "duration_s": 120.0}]
+    base = f"http://127.0.0.1:{service.port}"
+    status, _, body = _get(base, "/api/v1/sessions/history")
+    assert status == 200
+    data = json.loads(body.decode("utf-8"))
+    assert data["history"] == [{"session_id": "s1", "safety_score": 95, "duration_s": 120.0}]

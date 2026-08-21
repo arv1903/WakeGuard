@@ -1,5 +1,6 @@
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
 import '../services/monitoring_client.dart';
@@ -191,15 +192,20 @@ class _TripAnalyticsScreenState extends State<TripAnalyticsScreen> {
     );
   }
 
-  void _exportCsv() {
+  void _exportCsv() async {
     final rows = <String>[
       'Time,Attention,PERCLOS',
       ..._telemetryBuffer.map((p) =>
         '${DateFormat('HH:mm:ss').format(p.time)},${p.attention.toStringAsFixed(2)},${p.perclos.toStringAsFixed(4)}'),
     ];
     final csv = rows.join('\n');
+    await Clipboard.setData(ClipboardData(text: csv));
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('CSV exported (${csv.length} bytes, ${_telemetryBuffer.length} data points)')),
+      const SnackBar(
+        content: Text('Trip telemetry CSV copied to clipboard.'),
+        behavior: SnackBarBehavior.floating,
+      ),
     );
   }
 
@@ -231,7 +237,7 @@ class _TelemetryChart extends StatelessWidget {
       LineChartData(
         gridData: FlGridData(
           show: true, drawVerticalLine: false, horizontalInterval: 25,
-          getDrawingHorizontalLine: (v) => FlLine(color: AppColors.textMuted.withOpacity(0.15), strokeWidth: 1),
+          getDrawingHorizontalLine: (v) => FlLine(color: AppColors.textMuted.withValues(alpha:0.15), strokeWidth: 1),
         ),
         titlesData: const FlTitlesData(show: false),
         borderData: FlBorderData(show: false),
@@ -254,7 +260,7 @@ class _TelemetryChart extends StatelessWidget {
               show: true,
               gradient: LinearGradient(
                 begin: Alignment.topCenter, end: Alignment.bottomCenter,
-                colors: [AppColors.focusedGreen.withOpacity(0.2), AppColors.focusedGreen.withOpacity(0)],
+                colors: [AppColors.focusedGreen.withValues(alpha:0.2), AppColors.focusedGreen.withValues(alpha:0)],
               ),
             ),
           ),
@@ -266,7 +272,7 @@ class _TelemetryChart extends StatelessWidget {
               show: true,
               gradient: LinearGradient(
                 begin: Alignment.topCenter, end: Alignment.bottomCenter,
-                colors: [AppColors.alertRed.withOpacity(0.15), AppColors.alertRed.withOpacity(0)],
+                colors: [AppColors.alertRed.withValues(alpha:0.15), AppColors.alertRed.withValues(alpha:0)],
               ),
             ),
           ),
@@ -379,12 +385,12 @@ class _SparklinePainter extends CustomPainter {
     canvas.drawPath(fillPath, Paint()
       ..shader = LinearGradient(
         begin: Alignment.topCenter, end: Alignment.bottomCenter,
-        colors: [color.withOpacity(0.15), color.withOpacity(0)],
+        colors: [color.withValues(alpha:0.15), color.withValues(alpha:0)],
       ).createShader(Rect.fromLTWH(0, 0, size.width, size.height)));
 
     // Stroke
     canvas.drawPath(path, Paint()
-      ..color = color.withOpacity(0.7)
+      ..color = color.withValues(alpha:0.7)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.5
       ..strokeCap = StrokeCap.round
@@ -436,7 +442,7 @@ class _EventRow extends StatelessWidget {
         Expanded(child: Text(type, style: TextStyle(fontSize: 14, color: color, fontWeight: FontWeight.w500))),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-          decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(6)),
+          decoration: BoxDecoration(color: color.withValues(alpha:0.1), borderRadius: BorderRadius.circular(6)),
           child: Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: color)),
         ),
       ]),

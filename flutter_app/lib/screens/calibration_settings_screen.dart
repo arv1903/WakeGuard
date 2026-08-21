@@ -103,16 +103,49 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen> w
               Text('Enable or disable auxiliary output services.', style: TextStyle(fontSize: 14, color: AppColors.textSecondary)),
             ]),
             Row(children: [
-              _ModuleToggle(icon: Icons.photo_camera_outlined, label: 'Telegram Snapshot', initial: true),
+              _ModuleToggle(icon: Icons.photo_camera_outlined, label: 'Telegram Snapshot', initial: true,
+                settingKey: 'telegram_enabled', client: widget.client),
               const SizedBox(width: 24),
-              _ModuleToggle(icon: Icons.volume_up, label: 'Windows Audio Alarm', initial: true),
+              _ModuleToggle(icon: Icons.volume_up, label: 'Windows Audio Alarm', initial: true,
+                settingKey: 'alarm_enabled', client: widget.client),
               const SizedBox(width: 24),
-              _ModuleToggle(icon: Icons.subject, label: 'Threaded Logging', initial: false),
+              _ModuleToggle(icon: Icons.subject, label: 'Threaded Logging', initial: false,
+                settingKey: 'logging_enabled', client: widget.client),
             ]),
           ]),
         )),
       ]),
     );
+  }
+
+  // Default values used by Reset to Defaults.
+  static const _defaults = {
+    'ear_threshold': 0.20,
+    'microsleep_duration': 1.5,
+    'pitch_threshold': 18.0,
+    'yaw_threshold': 30.0,
+    'roll_threshold': 10.0,
+  };
+
+  Future<void> _resetToDefaults() async {
+    try {
+      await widget.client.sendCommand('/api/v1/settings', _defaults);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Settings reset to defaults.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        setState(() {}); // trigger slider rebuild
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Reset failed: $e'), backgroundColor: AppColors.alertRed),
+        );
+      }
+    }
   }
 
   Widget _buildHeader() {
@@ -126,6 +159,7 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen> w
       ]),
       Material(color: AppColors.surface2, borderRadius: BorderRadius.circular(8), child: InkWell(
         borderRadius: BorderRadius.circular(8),
+        onTap: _resetToDefaults,
         child: Padding(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
           child: Row(mainAxisSize: MainAxisSize.min, children: const [
             Icon(Icons.restore, size: 18, color: AppColors.textSecondary),
@@ -233,7 +267,7 @@ class _CalibrationRingPainter extends CustomPainter {
         Rect.fromCircle(center: center, radius: radius),
         -math.pi / 2, sweepAngle, false,
         Paint()
-          ..color = AppColors.focusedGreen.withOpacity(0.2)
+          ..color = AppColors.focusedGreen.withValues(alpha: 0.2)
           ..style = PaintingStyle.stroke
           ..strokeWidth = 16
           ..strokeCap = StrokeCap.round
@@ -331,7 +365,7 @@ class _SliderRowState extends State<_SliderRow> {
           activeTrackColor: AppColors.textPrimary,
           inactiveTrackColor: AppColors.surface2,
           thumbColor: AppColors.textPrimary,
-          overlayColor: AppColors.textPrimary.withOpacity(0.1),
+          overlayColor: AppColors.textPrimary.withValues(alpha: 0.1),
         ),
         child: Slider(
           value: _value, min: widget.min, max: widget.max,
@@ -344,10 +378,12 @@ class _SliderRowState extends State<_SliderRow> {
 }
 
 class _ModuleToggle extends StatefulWidget {
-  const _ModuleToggle({required this.icon, required this.label, required this.initial});
+  const _ModuleToggle({required this.icon, required this.label, required this.initial, this.settingKey, this.client});
   final IconData icon;
   final String label;
   final bool initial;
+  final String? settingKey;
+  final MonitoringClient? client;
 
   @override
   State<_ModuleToggle> createState() => _ModuleToggleState();
@@ -363,8 +399,16 @@ class _ModuleToggleState extends State<_ModuleToggle> {
       const SizedBox(width: 8),
       Text(widget.label, style: const TextStyle(fontSize: 13, color: AppColors.textPrimary)),
       const SizedBox(width: 8),
-      Switch(value: _on, onChanged: (v) => setState(() => _on = v),
-        activeColor: AppColors.focusedGreen),
+      Switch(
+        value: _on,
+        onChanged: (v) {
+          setState(() => _on = v);
+          if (widget.settingKey != null && widget.client != null) {
+            widget.client!.sendCommand('/api/v1/settings', {widget.settingKey!: v});
+          }
+        },
+        activeTrackColor: AppColors.focusedGreen,
+      ),
     ]);
   }
 }

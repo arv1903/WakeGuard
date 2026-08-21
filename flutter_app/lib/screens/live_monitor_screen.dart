@@ -107,16 +107,16 @@ class _AnimatedAlertBanner extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.15),
+        color: color.withValues(alpha:0.15),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withOpacity(0.4)),
-        boxShadow: [BoxShadow(color: color.withOpacity(0.12), blurRadius: 16)],
+        border: Border.all(color: color.withValues(alpha:0.4)),
+        boxShadow: [BoxShadow(color: color.withValues(alpha:0.12), blurRadius: 16)],
       ),
       child: Row(
         children: [
           Container(
             width: 48, height: 48,
-            decoration: BoxDecoration(color: color.withOpacity(0.15), shape: BoxShape.circle),
+            decoration: BoxDecoration(color: color.withValues(alpha:0.15), shape: BoxShape.circle),
             child: Icon(Icons.warning_rounded, color: color, size: 28),
           ),
           const SizedBox(width: 16),
@@ -134,7 +134,7 @@ class _AnimatedAlertBanner extends StatelessWidget {
           ),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(color: color.withOpacity(0.15), borderRadius: BorderRadius.circular(8), border: Border.all(color: color.withOpacity(0.3))),
+            decoration: BoxDecoration(color: color.withValues(alpha:0.15), borderRadius: BorderRadius.circular(8), border: Border.all(color: color.withValues(alpha:0.3))),
             child: Text('SEV ${snap.alertSeverity}',
               style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: color, letterSpacing: 1)),
           ),
@@ -159,7 +159,7 @@ class _FullscreenHud extends StatelessWidget {
         Positioned.fill(child: _MjpegView(client: client)),
         Positioned(top: 16, left: 16, child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(color: Colors.black.withOpacity(0.7), borderRadius: BorderRadius.circular(8)),
+          decoration: BoxDecoration(color: Colors.black.withValues(alpha:0.7), borderRadius: BorderRadius.circular(8)),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             const Text('IR-DMS LIVE', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, fontFamily: 'monospace', color: Colors.white70)),
             const SizedBox(height: 4),
@@ -182,7 +182,7 @@ class _FullscreenHud extends StatelessWidget {
         Positioned(top: 16, right: 16, child: IconButton(
           onPressed: onExit,
           icon: const Icon(Icons.fullscreen_exit, color: Colors.white70, size: 28),
-          style: IconButton.styleFrom(backgroundColor: Colors.black.withOpacity(0.5), shape: const CircleBorder()),
+          style: IconButton.styleFrom(backgroundColor: Colors.black.withValues(alpha:0.5), shape: const CircleBorder()),
         )),
       ],
     );
@@ -282,9 +282,9 @@ class _LiveBadge extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.15),
+        color: color.withValues(alpha:0.15),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withOpacity(0.4)),
+        border: Border.all(color: color.withValues(alpha:0.4)),
       ),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
         Icon(icon, size: 12, color: color),
@@ -317,7 +317,7 @@ class _TelemetryColumn extends StatelessWidget {
                 style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 2, color: AppColors.textSecondary)),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(6), border: Border.all(color: color.withOpacity(0.3))),
+                decoration: BoxDecoration(color: color.withValues(alpha:0.1), borderRadius: BorderRadius.circular(6), border: Border.all(color: color.withValues(alpha:0.3))),
                 child: Text(snap.focused ? 'OPTIMAL' : snap.alert != null ? 'WARNING' : 'MONITORING',
                   style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: color)),
               ),
@@ -496,7 +496,7 @@ class _GaugePainter extends CustomPainter {
     final rect = Rect.fromCircle(center: center, radius: radius);
     final track = Paint()..color = AppColors.gaugeTrack..style = PaintingStyle.stroke..strokeWidth = 10..strokeCap = StrokeCap.round;
     final fill = Paint()..color = color..style = PaintingStyle.stroke..strokeWidth = 10..strokeCap = StrokeCap.round;
-    final glow = Paint()..color = color.withOpacity(0.15)..style = PaintingStyle.stroke..strokeWidth = 24..strokeCap = StrokeCap.round..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10);
+    final glow = Paint()..color = color.withValues(alpha:0.15)..style = PaintingStyle.stroke..strokeWidth = 24..strokeCap = StrokeCap.round..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10);
     canvas.drawArc(rect, math.pi, math.pi, false, track);
     final sweep = math.pi * (value.clamp(0.0, 100.0) / 100);
     if (sweep > 0) { canvas.drawArc(rect, math.pi, sweep, false, glow); canvas.drawArc(rect, math.pi, sweep, false, fill); }
@@ -561,7 +561,7 @@ class _Badge extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(color: Colors.black.withOpacity(0.55), borderRadius: BorderRadius.circular(8)),
+      decoration: BoxDecoration(color: Colors.black.withValues(alpha:0.55), borderRadius: BorderRadius.circular(8)),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
         Icon(icon, size: 14, color: color),
         const SizedBox(width: 6),
@@ -574,7 +574,7 @@ class _Badge extends StatelessWidget {
 class _GridPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()..color = Colors.white.withOpacity(0.03)..strokeWidth = 1;
+    final paint = Paint()..color = Colors.white.withValues(alpha:0.03)..strokeWidth = 1;
     const step = 40.0;
     for (double x = 0; x < size.width; x += step) canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
     for (double y = 0; y < size.height; y += step) canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
@@ -712,7 +712,7 @@ class _CameraLoadingPlaceholder extends StatelessWidget {
           const Text('Connecting to camera...', style: TextStyle(color: AppColors.textSecondary, fontSize: 13, fontWeight: FontWeight.w500)),
           const SizedBox(height: 6),
           SizedBox(width: 120, child: LinearProgressIndicator(
-            backgroundColor: AppColors.surface2, color: AppColors.focusedGreen.withOpacity(0.5), minHeight: 2)),
+            backgroundColor: AppColors.surface2, color: AppColors.focusedGreen.withValues(alpha:0.5), minHeight: 2)),
         ]),
       ],
     );

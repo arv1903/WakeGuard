@@ -91,6 +91,10 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self._send_headers(status, content_type, len(body),
                            extra_headers=extra_headers)
         self.wfile.write(body)
+        try:
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
 
     def _send_json(self, status: int, payload: dict[str, Any],
                    extra_headers: dict[str, str] | None = None) -> None:
@@ -184,6 +188,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, self.api.session_metadata())
         elif path == f"{API_PREFIX}/sessions/current/summary":
             self._send_summary()
+        elif path == f"{API_PREFIX}/sessions/history":
+            self._send_history()
         else:
             self._error(404, "endpoint not found")
 
@@ -209,6 +215,17 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._error(500, "summary unavailable")
             return
         self._send_json(200, summary)
+
+    def _send_history(self) -> None:
+        if self.api.history_provider is None:
+            self._send_json(200, {"history": []})
+            return
+        try:
+            history = self.api.history_provider()
+        except Exception:
+            self._send_json(200, {"history": []})
+            return
+        self._send_json(200, {"history": history})
 
     def _send_frame(self) -> None:
         frame = self.api.latest_frame()
@@ -302,6 +319,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
             f"{API_PREFIX}/calibration/start": "start_calibration",
             f"{API_PREFIX}/alarm/mute": "mute_alarm",
             f"{API_PREFIX}/alarm/unmute": "unmute_alarm",
+            f"{API_PREFIX}/settings": "update_settings",
         }
         parsed = urlparse(self.path)
         command = command_paths.get(parsed.path)
@@ -338,6 +356,7 @@ class MonitoringApi:
                  store: MonitoringStore | None = None,
                  command_handler: CommandHandler | None = None,
                  summary_provider: SummaryProvider | None = None,
+                 history_provider: Callable[[], list[dict]] | None = None,
                  metadata_provider: MetadataProvider | None = None,
                  session_provider: MetadataProvider | None = None,
                  auth_token: str | None = None,
@@ -350,6 +369,7 @@ class MonitoringApi:
         self.store = store or MonitoringStore()
         self.command_handler = command_handler
         self.summary_provider = summary_provider
+        self.history_provider = history_provider
         self.metadata_provider = metadata_provider
         self.session_provider = session_provider
         self.auth_token = auth_token

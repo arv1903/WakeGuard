@@ -78,7 +78,7 @@ def GetApproxLocation(timeout=4.0) -> dict | None:
 
     try:
         resp = requests.get(
-            "http://ip-api.com/json/?fields=status,lat,lon,city,regionName,country"
+            "https://ip-api.com/json/?fields=status,lat,lon,city,regionName,country"
             "&lang=en", timeout=timeout)
         info = resp.json()
         if info.get("status") == "success":

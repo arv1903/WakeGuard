@@ -67,6 +67,19 @@ def test_yolo_throttle_persists_detection():
     assert r3.boxes == r2.boxes
 
 
+def test_head_pose_throttle_persists_pose():
+    cam = FakeCamera()
+    inf = InferenceThread(cam, FakeModel(), None, pose_every_n=2, yolo_every_n=10**9)
+    inf._landmarker = _fake_landmarker_result([_realistic_face_landmarks()])
+    r1 = inf._infer(cam.latest_frame())   # counter=1: pose skipped (initial default)
+    r2 = inf._infer(cam.latest_frame())   # counter=2: pose runs (valid=True)
+    r3 = inf._infer(cam.latest_frame())   # counter=3: pose skipped → must persist valid=True
+    assert r2.head_pose["valid"] is True
+    assert r3.head_pose["valid"] is True
+    assert r3.head_pose["pitch"] == r2.head_pose["pitch"]
+    assert r3.ear == r2.ear
+
+
 # ── MediaPipe landmark API compatibility ──────────────────────────
 # MediaPipe < 1.0 returns NormalizedLandmarkList wrappers exposing
 # ``.landmark``; 1.0+ returns plain lists of NormalizedLandmark.
