@@ -59,6 +59,8 @@ _RUNTIME_SETTING_ALIASES = {
     "night_mode": "NightMode",
     "perclos_threshold": "PerclosAlertThreshold",
     "yolo_drowsy_threshold": "YoloDrowsyThreshold",
+    "blink_rate_threshold": "BlinkRateAlertPerMin",
+    "safety_penalty_per_alert": "SafetyScorePenaltyPerAlert",
 }
 
 
@@ -98,10 +100,14 @@ def ValidateRuntimeSettings(updates: dict) -> dict:
                 raise ValueError(f"yaw_threshold {fv} out of range [10,60]")
             if name == "HeadRollThreshold" and not 5 <= fv <= 30:
                 raise ValueError(f"roll_threshold {fv} out of range [5,30]")
+            if name == "SafetyScorePenaltyPerAlert" and not 0 <= fv <= 20:
+                raise ValueError(f"safety_penalty_per_alert {fv} out of range [0,20]")
             if name == "PerclosAlertThreshold" and not 0.0 <= fv <= 1.0:
                 raise ValueError(f"perclos_threshold {fv} out of range [0,1]")
             if name == "YoloDrowsyThreshold" and not 0.0 <= fv <= 1.0:
                 raise ValueError(f"yolo_drowsy_threshold {fv} out of range [0,1]")
+            if name == "BlinkRateAlertPerMin" and not 1.0 <= fv <= 30.0:
+                raise ValueError(f"blink_rate_threshold {fv} out of range [1,30]")
             canonical[name] = fv
         elif isinstance(current, str):
             if not isinstance(value, str):
@@ -171,7 +177,8 @@ DisplayFps = 30               # display loop target FPS (GUI mode)
 EarClosedThreshold = 0.20     # EAR below this = eyes closed
 EarMinBlinkSeconds = 0.10     # shorter closures are noise, not blinks
 MicrosleepSeconds = 1.5       # continuous closed beyond this = microsleep
-BlinkRateAlertPerMin = 8.0    # (reserved) abnormally slow blink rate
+BlinkRateAlertPerMin = 8.0    # abnormally slow blink rate after observation window
+BlinkRateAlertTime = 10.0
 
 # ── YOLO Drowsiness Thresholds ────────────────────
 YoloDrowsyThreshold = 0.5         # fire YOLO-only alert above this
@@ -186,9 +193,6 @@ DrowsyEmaAlpha = 0.9          # EMA smoothing of YOLO drowsy confidence
 EyesClosedYoloConf = 0.3      # YOLO drowsy conf treated as "eyes closed"
 
 # ── Focus / Attention Zones ───────────────────────
-HeadPitchFocusedMin = -10.0
-HeadPitchFocusedMax = 15.0
-HeadYawFocused = 15.0
 
 # ── Attention Score Weights ───────────────────────
 AttentionYawWeight = 30.0
@@ -201,13 +205,10 @@ AttentionUnfocusedMin = 50.0
 FrameWidth = 1280
 FrameHeight = 720
 HudPanel = 275
-BarWidth = 155
-BarHeight = 11
 PoseSmoothAlpha = 0.35
 AttentionSmoothAlpha = 0.85
 
 # ── HUD Rendering ──────────────────────────────────
-PilHud = True                 # use the anti-aliased PIL HUD when available
 NightMode = False             # dim the overlay for night driving
 
 # ── Safety Score ──────────────────────────────────
@@ -224,4 +225,5 @@ AlertMessages = {
     "yolo": "DROWSINESS DETECTED!",
     "perclos": "FATIGUE DETECTED - SUSTAINED EYE CLOSURE!",
     "microsleep": "MICROSLEEP - EYES CLOSED! WAKE UP!",
+    "low_blink": "LOW BLINK RATE - TAKE A BREAK!",
 }

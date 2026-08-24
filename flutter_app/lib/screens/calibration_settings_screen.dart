@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -16,10 +15,17 @@ class CalibrationSettingsScreen extends StatefulWidget {
 
 class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
     with SingleTickerProviderStateMixin {
-  bool _calibrating = false;
-  int _calProgress = 0;
+  bool _commandPending = false;
+  String? _lastCalibrationState;
   late AnimationController _ringCtrl;
   late Map<String, double> _thresholds;
+
+  /// Module toggle state — owned here so it survives widget rebuilds.
+  final Map<String, bool> _moduleState = {
+    'telegram_enabled': true,
+    'alarm_enabled': true,
+    'logging_enabled': false,
+  };
 
   @override
   void initState() {
@@ -27,12 +33,44 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
     _thresholds = Map<String, double>.from(_defaults);
     _ringCtrl =
         AnimationController(vsync: this, duration: const Duration(seconds: 4));
+    _lastCalibrationState = widget.client.snapshot.calibrationState;
+    widget.client.addListener(_onClientUpdate);
+    if (_lastCalibrationState == 'running') _ringCtrl.repeat();
   }
 
   @override
   void dispose() {
     _ringCtrl.dispose();
+    widget.client.removeListener(_onClientUpdate);
     super.dispose();
+  }
+
+  void _onClientUpdate() {
+    if (!mounted) return;
+    final state = widget.client.snapshot.calibrationState;
+    if (state != _lastCalibrationState) {
+      _lastCalibrationState = state;
+      if (state == 'running') {
+        _ringCtrl.repeat();
+      } else {
+        _ringCtrl.stop();
+      }
+      _commandPending = false;
+      if (state == 'succeeded') {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Calibration completed successfully'),
+          backgroundColor: AppColors.focusedGreen,
+          duration: Duration(seconds: 2),
+        ));
+      } else if (state == 'failed') {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+              widget.client.snapshot.calibrationError ?? 'Calibration failed'),
+          backgroundColor: AppColors.alertRed,
+        ));
+      }
+    }
+    setState(() {});
   }
 
   Future<void> _sendSetting(String key, double value) async {
@@ -41,13 +79,19 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
     } catch (_) {}
   }
 
+  Future<void> _toggleModule(String key, bool value) async {
+    setState(() => _moduleState[key] = value);
+    try {
+      await widget.client.sendCommand('/api/v1/settings', {key: value});
+    } catch (_) {
+      // Revert on failure
+      setState(() => _moduleState[key] = !value);
+    }
+  }
+
   Future<void> _startCalibration() async {
-    setState(() {
-      _calibrating = true;
-      _calProgress = 0;
-    });
+    setState(() => _commandPending = true);
     _ringCtrl.reset();
-    _ringCtrl.forward();
     try {
       await widget.client
           .sendCommand('/api/v1/calibration/start', {'duration': 4});
@@ -60,25 +104,9 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text('Calibration failed: $e'),
             backgroundColor: AppColors.alertRed));
-        setState(() {
-          _calibrating = false;
-          _calProgress = 0;
-        });
+        setState(() => _commandPending = false);
         _ringCtrl.reset();
       }
-      return;
-    }
-    for (var i = 0; i <= 100; i += 5) {
-      await Future.delayed(const Duration(milliseconds: 200));
-      if (!mounted) return;
-      setState(() => _calProgress = i);
-    }
-    if (mounted) {
-      setState(() => _calibrating = false);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Calibration completed successfully'),
-          backgroundColor: AppColors.focusedGreen,
-          duration: Duration(seconds: 2)));
     }
   }
 
@@ -160,7 +188,7 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
             child: Padding(
           padding: const EdgeInsets.all(24),
           child: LayoutBuilder(builder: (context, c) {
-            final narrow = c.maxWidth < 1500;
+            final narrow = c.maxWidth < 900;
             if (narrow) {
               return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -185,21 +213,18 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
                       _ModuleToggle(
                           icon: Icons.photo_camera_outlined,
                           label: 'Telegram Snapshot',
-                          initial: true,
-                          settingKey: 'telegram_enabled',
-                          client: widget.client),
+                          value: _moduleState['telegram_enabled']!,
+                          onChanged: (v) => _toggleModule('telegram_enabled', v)),
                       _ModuleToggle(
                           icon: Icons.volume_up,
                           label: 'Windows Audio Alarm',
-                          initial: true,
-                          settingKey: 'alarm_enabled',
-                          client: widget.client),
+                          value: _moduleState['alarm_enabled']!,
+                          onChanged: (v) => _toggleModule('alarm_enabled', v)),
                       _ModuleToggle(
                           icon: Icons.subject,
                           label: 'Threaded Logging',
-                          initial: false,
-                          settingKey: 'logging_enabled',
-                          client: widget.client),
+                          value: _moduleState['logging_enabled']!,
+                          onChanged: (v) => _toggleModule('logging_enabled', v)),
                     ]),
                   ]);
             }
@@ -224,23 +249,20 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
                     _ModuleToggle(
                         icon: Icons.photo_camera_outlined,
                         label: 'Telegram Snapshot',
-                        initial: true,
-                        settingKey: 'telegram_enabled',
-                        client: widget.client),
+                        value: _moduleState['telegram_enabled']!,
+                        onChanged: (v) => _toggleModule('telegram_enabled', v)),
                     const SizedBox(width: 24),
                     _ModuleToggle(
                         icon: Icons.volume_up,
                         label: 'Windows Audio Alarm',
-                        initial: true,
-                        settingKey: 'alarm_enabled',
-                        client: widget.client),
+                        value: _moduleState['alarm_enabled']!,
+                        onChanged: (v) => _toggleModule('alarm_enabled', v)),
                     const SizedBox(width: 24),
                     _ModuleToggle(
                         icon: Icons.subject,
                         label: 'Threaded Logging',
-                        initial: false,
-                        settingKey: 'logging_enabled',
-                        client: widget.client),
+                        value: _moduleState['logging_enabled']!,
+                        onChanged: (v) => _toggleModule('logging_enabled', v)),
                   ]),
                 ]);
           }),
@@ -253,7 +275,7 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
   static const _defaults = {
     'ear_threshold': 0.20,
     'microsleep_duration': 1.5,
-    'pitch_threshold': 18.0,
+    'pitch_threshold': 20.0,
     'yaw_threshold': 30.0,
     'roll_threshold': 10.0,
   };
@@ -398,7 +420,7 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
               ]),
               const SizedBox(height: 8),
               const Text(
-                  'Ensure driver is looking straight ahead with eyes fully open. System will capture baseline EAR and head pose metrics over a 4-second window.',
+                  'Look straight ahead with eyes open. The system will capture neutral head pose metrics from live camera frames.',
                   style:
                       TextStyle(fontSize: 14, color: AppColors.textSecondary)),
             ]),
@@ -423,7 +445,7 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
                 ]),
                 const SizedBox(height: 8),
                 const Text(
-                    'Ensure driver is looking straight ahead with eyes fully open. System will capture baseline EAR and head pose metrics over a 4-second window.',
+                    'Look straight ahead with eyes open. The system will capture neutral head pose metrics from live camera frames.',
                     style: TextStyle(
                         fontSize: 14, color: AppColors.textSecondary)),
               ])),
@@ -435,6 +457,9 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
   }
 
   Widget _calibrationProgress() {
+    final snap = widget.client.snapshot;
+    final running = snap.calibrationState == 'running' || _commandPending;
+    final progress = snap.calibrationProgress.clamp(0.0, 1.0);
     return SizedBox(
       width: 200,
       height: 200,
@@ -447,9 +472,9 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
               return CustomPaint(
                 size: const Size(180, 180),
                 painter: _CalibrationRingPainter(
-                  progress: _calProgress / 100.0,
-                  animValue: _calibrating ? _ringCtrl.value : 0,
-                  active: _calibrating,
+                  progress: progress,
+                  animValue: running ? _ringCtrl.value : 0,
+                  active: running,
                 ),
               );
             },
@@ -457,19 +482,23 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
           Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text('$_calProgress%',
+              Text('${(progress * 100).round()}%',
                   style: TextStyle(
                     fontSize: 28,
                     fontWeight: FontWeight.w700,
-                    color: _calibrating
+                    color: running
                         ? AppColors.focusedGreen
                         : AppColors.textPrimary,
                   )),
+              if (running)
+                Text('${snap.calibrationValidSamples} samples',
+                    style: const TextStyle(
+                        fontSize: 11, color: AppColors.textSecondary)),
               const SizedBox(height: 8),
               SizedBox(
                 width: 120,
                 child: ElevatedButton(
-                  onPressed: _calibrating ? null : _startCalibration,
+                  onPressed: running ? null : _startCalibration,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.textPrimary,
                     foregroundColor: AppColors.surface0,
@@ -477,15 +506,13 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
                     shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(8)),
                   ),
-                  child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(_calibrating ? Icons.refresh : Icons.play_arrow,
-                            size: 18),
-                        const SizedBox(width: 4),
-                        Text(_calibrating ? '...' : 'Start 4s',
-                            style: const TextStyle(fontSize: 12)),
-                      ]),
+                  child: Tooltip(
+                    message: running
+                        ? '${snap.calibrationValidSamples} valid samples'
+                        : 'Start 4 second calibration',
+                    child: Icon(running ? Icons.refresh : Icons.play_arrow,
+                        size: 18),
+                  ),
                 ),
               ),
             ],
@@ -674,43 +701,28 @@ class _SliderRow extends StatelessWidget {
   }
 }
 
-class _ModuleToggle extends StatefulWidget {
+class _ModuleToggle extends StatelessWidget {
   const _ModuleToggle(
       {required this.icon,
       required this.label,
-      required this.initial,
-      this.settingKey,
-      this.client});
+      required this.value,
+      required this.onChanged});
   final IconData icon;
   final String label;
-  final bool initial;
-  final String? settingKey;
-  final MonitoringClient? client;
-
-  @override
-  State<_ModuleToggle> createState() => _ModuleToggleState();
-}
-
-class _ModuleToggleState extends State<_ModuleToggle> {
-  late bool _on = widget.initial;
+  final bool value;
+  final ValueChanged<bool> onChanged;
 
   @override
   Widget build(BuildContext context) {
     return Row(children: [
-      Icon(widget.icon, size: 18, color: AppColors.textSecondary),
+      Icon(icon, size: 18, color: AppColors.textSecondary),
       const SizedBox(width: 8),
-      Text(widget.label,
+      Text(label,
           style: const TextStyle(fontSize: 13, color: AppColors.textPrimary)),
       const SizedBox(width: 8),
       Switch(
-        value: _on,
-        onChanged: (v) {
-          setState(() => _on = v);
-          if (widget.settingKey != null && widget.client != null) {
-            widget.client!
-                .sendCommand('/api/v1/settings', {widget.settingKey!: v});
-          }
-        },
+        value: value,
+        onChanged: onChanged,
         activeTrackColor: AppColors.focusedGreen,
       ),
     ]);

@@ -112,6 +112,7 @@ ALERT_SEVERITY = {
     "FATIGUE": 3,
     "FACE LOST": 3,
     "DISTRACTED": 2,
+    "LOW BLINK RATE": 2,
     "DROWSINESS": 1,
 }
 
@@ -154,7 +155,12 @@ def RenderHud(frame: np.ndarray, state: HudState) -> np.ndarray:
           fill=(60, 60, 70, 255), width=10)
     d.arc((cx - r, cy - r, cx + r, cy + r), start=180,
           end=180 - 180 * frac, fill=color, width=10)
-    d.text((cx - 20, cy - 16), f"{state.attention:.0f}", font=_font(28),
+    score_str = f"{state.attention:.0f}"
+    score_font = _font(28)
+    bbox = d.textbbox((0, 0), score_str, font=score_font)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+    d.text((cx - text_w / 2, cy - text_h / 2 - 4), score_str, font=score_font,
            fill=(255, 255, 255, 255))
 
     # Sparkline of attention history

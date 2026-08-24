@@ -49,6 +49,11 @@ class SessionLogger:
             try:
                 self._f.write(json.dumps(event) + "\n")
                 self._f.flush()
+                if hasattr(self._f, "fileno"):
+                    try:
+                        os.fsync(self._f.fileno())
+                    except OSError:
+                        pass
             except OSError as exc:
                 print(f"[session_log] write failed: {exc}")
 

@@ -14,6 +14,11 @@ class _RecordingClient extends MonitoringClient {
   Future<void> sendCommand(String path, [Map<String, dynamic>? payload]) async {
     commands.add({'path': path, 'payload': payload});
   }
+
+  void publish(Map<String, dynamic> payload) {
+    snapshot = MonitoringSnapshot.fromJson(payload);
+    notifyListeners();
+  }
 }
 
 void main() {
@@ -74,6 +79,35 @@ void main() {
     expect(tester.widget<Slider>(find.byType(Slider).first).value, 0.20);
     expect(
         client.commands.last['payload'], containsPair('ear_threshold', 0.20));
+    client.dispose();
+  });
+
+  testWidgets('calibration progress follows running backend snapshots',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final client = _RecordingClient();
+    client.publish({
+      'calibration_state': 'running',
+      'calibration_progress': 0.25,
+      'calibration_valid_samples': 4,
+    });
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(body: CalibrationSettingsScreen(client: client)),
+    ));
+    await tester.pump();
+    expect(find.text('25%'), findsOneWidget);
+    expect(find.text('4 samples'), findsOneWidget);
+
+    client.publish({
+      'calibration_state': 'running',
+      'calibration_progress': 0.6,
+      'calibration_valid_samples': 12,
+    });
+    await tester.pump();
+    expect(find.text('60%'), findsOneWidget);
+    expect(find.text('12 samples'), findsOneWidget);
+    expect(find.text('Calibration completed successfully'), findsNothing);
     client.dispose();
   });
 }

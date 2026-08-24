@@ -1,5 +1,9 @@
 # Remediation Plan V2 — Driver Drowsiness Detection
 
+> Superseded by `.kilo/plans/remediation-completion.md`. The completion plan
+> reflects the implemented schema-v2 calibration contract, low-blink policy,
+> single HUD renderer, and current verification gates.
+
 **Checkpoint:** `checkpoint-2026-08-21-v2` (tag on main, 865974d)
 **Goal:** Fix all P0 demo blockers + correctness/performance regressions identified in 2026-08-21 audit before demo (1-2 days), then P1 polish in next sprint.
 **Verified baseline:** `git diff 83e08af..HEAD` shows 26 files changed, 1073 inserts — many P1 items already partially done but P0 correctness/performance/responsiveness remain.
