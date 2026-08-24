@@ -51,7 +51,7 @@ def test_health_and_status(api):
     assert status == 200
     assert json.loads(raw_health)["status"] == "ok"
     assert json.loads(raw_status)["attention"] == 91.0
-    assert json.loads(raw_status)["schema_version"] == 1
+    assert json.loads(raw_status)["schema_version"] == 2
     assert json.loads(raw_status)["server_id"]
 
 

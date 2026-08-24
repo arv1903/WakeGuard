@@ -221,11 +221,16 @@ class _AppShellState extends State<AppShell> {
     final key = ValueKey('$_isSessionActive-$_selectedIndex');
     if (!_isSessionActive) {
       switch (_selectedIndex) {
+        case 1:
+          return TripAnalyticsScreen(key: key, client: widget.client);
         case 2:
           return CalibrationSettingsScreen(key: key, client: widget.client);
         default:
           return HomeScreen(
-              key: key, client: widget.client, onStartSession: _startSession);
+              key: key,
+              client: widget.client,
+              onStartSession: _startSession,
+              onNavigate: (i) => setState(() => _selectedIndex = i));
       }
     }
     switch (_selectedIndex) {

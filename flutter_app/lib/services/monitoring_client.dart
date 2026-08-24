@@ -9,60 +9,35 @@ import '../models/monitoring_snapshot.dart';
 
 enum BackendConnectionState { disconnected, connecting, connected, error }
 
-// ─── Client-side EMA smoother ──────────────────────────────────────────────
-// Smooths numeric fields that stutter (PERCLOS, blink rate, head pose) and
-// debounces the status text so it doesn't flicker between rapid alert
-// transitions. Raw data is untouched; only the display snapshot is smoothed.
+// ─── Client-side severity smoother ────────────────────────────────────────
+// The backend already applies EMA to all numeric telemetry fields. This
+// class only debounces the alert severity / status label to prevent rapid
+// flicker in the UI without adding extra lag to the underlying metrics.
 
 class _SnapshotSmoother {
-  double _attention = 0;
-  double _perclos = 0;
-  double _drowsy = 0;
-  double _blinks = 0;
-  double _pitch = 0;
-  double _yaw = 0;
-  double _roll = 0;
   int _smoothedSeverity = 0;
   String? _displayedStatus;
   bool _initialised = false;
 
-  // Per-field alpha: higher = more responsive, lower = smoother.
-  // Reduced double-smoothing lag: backend already smooths at 0.85 per frame,
-  // so client uses higher alpha (more responsive) to avoid 6-8 frame lag.
-  static const _aAttention = 0.55;
-  static const _aPerclos = 0.50;
-  static const _aDrowsy = 0.50;
-  static const _aBlinks = 0.40;
-  static const _aPose = 0.55;
   // Severity EMA — needs to cross hysteresis thresholds to change status.
   static const _aSeverity = 0.35;
 
   double _ema(double prev, double raw, double alpha) =>
       alpha * raw + (1 - alpha) * prev;
 
-  /// Apply EMA smoothing to a snapshot and return the display-ready version.
+  /// Debounce alert severity and return display-ready snapshot.
+  /// All numeric metrics are passed through directly from [raw].
   MonitoringSnapshot smooth(MonitoringSnapshot raw) {
     if (!_initialised) {
-      _attention = raw.attention;
-      _perclos = raw.perclos;
-      _drowsy = raw.emaDrowsy;
-      _blinks = raw.blinksPerMin;
-      _pitch = raw.pitch;
-      _yaw = raw.yaw;
-      _roll = raw.roll;
       _smoothedSeverity = raw.alertSeverity;
       _displayedStatus = raw.status;
       _initialised = true;
       return raw;
     }
 
-    _attention = _ema(_attention, raw.attention, _aAttention);
-    _perclos = _ema(_perclos, raw.perclos, _aPerclos);
-    _drowsy = _ema(_drowsy, raw.emaDrowsy, _aDrowsy);
-    _blinks = _ema(_blinks, raw.blinksPerMin, _aBlinks);
-    _pitch = _ema(_pitch, raw.pitch, _aPose);
-    _yaw = _ema(_yaw, raw.yaw, _aPose);
-    _roll = _ema(_roll, raw.roll, _aPose);
+    // Backend already applies EMA to these metrics — pass through directly
+    // to avoid double-smoothing which adds artificial lag.
+    // Only severity gets a thin hysteresis layer here to prevent status flicker.
 
     // Status hysteresis — smoothed severity must cross thresholds to change
     // the displayed text, preventing rapid flicker while alerting immediately
@@ -99,16 +74,16 @@ class _SnapshotSmoother {
       sessionId: raw.sessionId,
       tripStartedAt: raw.tripStartedAt,
       tripActive: raw.tripActive,
-      attention: _attention,
-      perclos: _perclos,
-      emaDrowsy: _drowsy,
+      attention: raw.attention,
+      perclos: raw.perclos,
+      emaDrowsy: raw.emaDrowsy,
       ear: raw.ear,
       eyesClosed: raw.eyesClosed,
       microsleep: raw.microsleep,
-      blinksPerMin: _blinks,
-      pitch: _pitch,
-      yaw: _yaw,
-      roll: _roll,
+      blinksPerMin: raw.blinksPerMin,
+      pitch: raw.pitch,
+      yaw: raw.yaw,
+      roll: raw.roll,
       poseValid: raw.poseValid,
       faceFound: raw.faceFound,
       faceLost: raw.faceLost,

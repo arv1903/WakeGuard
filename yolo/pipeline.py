@@ -58,10 +58,13 @@ class FrameResult:
 
 
 class CameraThread(threading.Thread):
-    """Reads frames from a camera index or video file."""
+    """Reads frames from a camera index or video file with auto-recovery."""
 
     def __init__(self, source, width=640, height=480, flip=True):
         super().__init__(daemon=True, name="camera")
+        self._source = source
+        self._width = width
+        self._height = height
         self._latest = LatestValue()
         self._stop = threading.Event()
         self._flip = flip
@@ -74,15 +77,26 @@ class CameraThread(threading.Thread):
 
     def run(self) -> None:
         failures = 0
+        backoff = 0.05
         while not self._stop.is_set():
             ok, frame = self._cap.read()
             if not ok:
                 failures += 1
-                if failures > 100:
-                    break                      # camera gone; pipeline stalls
-                self._stop.wait(0.01)
+                if failures >= 30:
+                    if failures == 30:
+                        print(f"[camera] read stalled ({failures} failures); attempting re-acquisition...")
+                    self._cap.release()
+                    self._stop.wait(backoff)
+                    self._cap = cv2.VideoCapture(self._source)
+                    self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
+                    self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
+                    backoff = min(backoff * 1.5, 2.0)
+                    failures = 0
+                else:
+                    self._stop.wait(0.01)
                 continue
             failures = 0
+            backoff = 0.05
             if self._flip:
                 frame = cv2.flip(frame, 1)
             self._latest.publish(frame)
@@ -114,6 +128,7 @@ class InferenceThread(threading.Thread):
         self._stop = threading.Event()
         self._frame_counter = 0
         self._stats = PerfStats()
+        self._rgb_buffer: np.ndarray | None = None
         # Last YOLO detection and head pose, carried forward while throttled so
         # the consumer never sees false "face lost" or resets timers on skipped frames.
         self._last_boxes = []
@@ -153,8 +168,14 @@ class InferenceThread(threading.Thread):
         # ── Head pose (every N frames) ──────────────────
         self._stats.tick()
         if n % self._pose_every_n == 0:
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            if (self._rgb_buffer is None
+                    or self._rgb_buffer.shape != frame.shape
+                    or self._rgb_buffer.dtype != frame.dtype):
+                self._rgb_buffer = np.empty(frame.shape, dtype=frame.dtype, order="C")
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB, dst=self._rgb_buffer)
+            if rgb is not self._rgb_buffer:
+                self._rgb_buffer = np.ascontiguousarray(rgb)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=self._rgb_buffer)
             mp_result = self._landmarker.detect_for_video(mp_image, _mp_timestamp_ms())
             result.head_pose = ComputeHeadPose(mp_result, frame.shape)
             if result.head_pose["valid"]:

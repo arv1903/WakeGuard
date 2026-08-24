@@ -47,6 +47,8 @@ class BlinkMonitor:
         self._closed = False
         self._closed_at = 0.0
         self._blink_ends = collections.deque()
+        self._observed_seconds = 0.0
+        self._last_valid_at: float | None = None
 
     def configure(self, closed_threshold: float | None = None,
                   min_blink_seconds: float | None = None,
@@ -71,6 +73,13 @@ class BlinkMonitor:
                 raise ValueError(f"microsleep_duration {v} out of range [0.3, 5.0]")
             self._microsleep_seconds = v
 
+    def reset(self) -> None:
+        self._closed = False
+        self._closed_at = 0.0
+        self._blink_ends.clear()
+        self._observed_seconds = 0.0
+        self._last_valid_at = None
+
     def update(self, ear: float | None, now: float) -> dict:
         """Feed one EAR sample. Returns a state dict (see below).
 
@@ -82,12 +91,19 @@ class BlinkMonitor:
             if self._closed:
                 # Close any pending microsleep without counting a blink.
                 self._closed = False
+            # Pause observation time across gaps; do not count or discard it.
+            self._last_valid_at = None
             return {
                 "closed": False,
                 "closed_seconds": 0.0,
                 "microsleep": False,
                 "blinks_per_min": len(self._blink_ends),
+                "rate_ready": self._rate_ready(),
             }
+        if self._last_valid_at is not None and now >= self._last_valid_at:
+            self._observed_seconds += now - self._last_valid_at
+        self._last_valid_at = now
+        self._expire_blinks(now)
         closed = ear < self._closed_threshold
         if closed and not self._closed:
             self._closed = True
@@ -98,13 +114,19 @@ class BlinkMonitor:
             # A microsleep is not also a blink.
             if self._min_blink_seconds <= duration < self._microsleep_seconds:
                 self._blink_ends.append(now)
-                while (self._blink_ends
-                       and self._blink_ends[0] < now - self._rate_window_seconds):
-                    self._blink_ends.popleft()
         closed_seconds = (now - self._closed_at) if self._closed else 0.0
         return {
             "closed": self._closed,
             "closed_seconds": closed_seconds,
             "microsleep": self._closed and closed_seconds >= self._microsleep_seconds,
             "blinks_per_min": len(self._blink_ends),
+            "rate_ready": self._rate_ready(),
         }
+
+    def _rate_ready(self) -> bool:
+        return self._observed_seconds >= self._rate_window_seconds
+
+    def _expire_blinks(self, now: float) -> None:
+        cutoff = now - self._rate_window_seconds
+        while self._blink_ends and self._blink_ends[0] < cutoff:
+            self._blink_ends.popleft()

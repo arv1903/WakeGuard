@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from functools import partial
 import json
+import ipaddress
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
@@ -94,8 +95,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
                     extra_headers: dict[str, str] | None = None) -> None:
         self._send_headers(status, content_type, len(body),
                            extra_headers=extra_headers)
-        self.wfile.write(body)
         try:
+            self.wfile.write(body)
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
@@ -121,15 +122,9 @@ class _RequestHandler(BaseHTTPRequestHandler):
         version = -1
         try:
             while self.api.running:
-                frame, version = self.api.wait_for_frame(version, timeout=1.0)
-                if frame is None:
+                payload, version = self.api.wait_for_jpeg(version, timeout=1.0)
+                if payload is None:
                     continue
-                ok, encoded = cv2.imencode(
-                    ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80]
-                )
-                if not ok:
-                    continue
-                payload = encoded.tobytes()
                 self.wfile.write(
                     b"--frame\r\n"
                     b"Content-Type: image/jpeg\r\n"
@@ -200,15 +195,12 @@ class _RequestHandler(BaseHTTPRequestHandler):
     def _is_local_address(self, addr: str) -> bool:
         if addr in ("127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"):
             return True
-        if addr.startswith("127."):
-            return True
-        # Docker/desktop bridge may present as 172.x but still host-local
-        # when server is bound to 127.0.0.1; check that binding.
-        if self.api.host in ("127.0.0.1", "localhost", "::1"):
-            # If server is loopback-bound, any non-local client must have
-            # traversed a reverse proxy — deny.
+        try:
+            clean_addr = addr.removeprefix("::ffff:")
+            ip = ipaddress.ip_address(clean_addr)
+            return ip.is_loopback
+        except ValueError:
             return False
-        return False
 
     def _send_pairing(self) -> None:
         # The code is only retrievable from the same machine. A mobile client
@@ -408,6 +400,7 @@ class MonitoringApi:
         self._frame_lock = threading.Lock()
         self._frame_condition = threading.Condition(self._frame_lock)
         self._frame: np.ndarray | None = None
+        self._jpeg_bytes: bytes | None = None
         self._frame_version = 0
 
     @property
@@ -488,11 +481,29 @@ class MonitoringApi:
 
     def publish_frame(self, frame: np.ndarray) -> None:
         """Publish the newest raw frame without blocking the detector."""
+        ok, encoded = cv2.imencode(
+            ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80]
+        )
+        jpeg_bytes = encoded.tobytes() if ok else None
         with self._frame_condition:
             self._frame = frame
+            self._jpeg_bytes = jpeg_bytes
             self._frame_version += 1
             self._frame_condition.notify_all()
 
     def latest_frame(self) -> np.ndarray | None:
         with self._frame_lock:
             return self._frame
+
+    def latest_jpeg(self) -> bytes | None:
+        with self._frame_lock:
+            return self._jpeg_bytes
+
+    def wait_for_jpeg(self, after_version: int,
+                      timeout: float | None = None) -> tuple[bytes | None, int]:
+        with self._frame_condition:
+            self._frame_condition.wait_for(
+                lambda: self._frame_version > after_version or not self.running,
+                timeout=timeout,
+            )
+            return self._jpeg_bytes, self._frame_version

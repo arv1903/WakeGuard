@@ -34,7 +34,9 @@ class LatestValue:
         Returns (value, new_version). If timeout, value is current value.
         """
         with self._cond:
-            self._cond.wait_for(lambda: self._version > last_version, timeout=timeout)
+            ok = self._cond.wait_for(lambda: self._version > last_version, timeout=timeout)
+            if not ok:
+                return None, self._version
             return self._value, self._version
 
     @property

@@ -35,9 +35,10 @@ from yolo.config import (
     PerclosAlertThreshold, PerclosAlertTime, PerclosWindowSeconds,
     DrowsyEmaAlpha, EyesClosedYoloConf,
     EarClosedThreshold, EarMinBlinkSeconds, MicrosleepSeconds,
+    BlinkRateAlertPerMin, BlinkRateAlertTime,
     ClearGraceSeconds,
     CalibrationDuration, CalibrationCountdown, ProfilePath,
-    SessionLogPath, PilHud,
+    SessionLogPath,
 )
 from yolo.calibration import CalibrationProfile, CalibrationSession, RunCalibration
 from yolo.envfile import LoadEnvFile
@@ -47,7 +48,7 @@ from yolo.eyes import BlinkMonitor
 from yolo.hud import HudState, RenderHud
 from yolo.perclos import DrowsyEMA, PerclosTracker
 from yolo.detector import CreateDetectionModel, CreateFaceLandmarker
-from yolo.drawing import DrawHud, DrawAlertOverlay, DrawModernBox, DrawHeadAxes
+from yolo.drawing import DrawAlertOverlay, DrawModernBox, DrawHeadAxes
 from yolo.pipeline import CameraThread, InferenceThread
 from yolo.stats import PerfStats
 from yolo.monitoring import (GetAlertSeverity, MonitoringSnapshot,
@@ -68,7 +69,8 @@ _CONFIG_NAMES = (
     "AttentionUnfocusedMin TelegramCooldown PerclosAlertThreshold "
     "PerclosAlertTime PerclosWindowSeconds DrowsyEmaAlpha EyesClosedYoloConf "
     "EarClosedThreshold EarMinBlinkSeconds MicrosleepSeconds ClearGraceSeconds "
-    "CalibrationDuration CalibrationCountdown ProfilePath SessionLogPath PilHud "
+    "CalibrationDuration CalibrationCountdown ProfilePath SessionLogPath "
+    "BlinkRateAlertPerMin BlinkRateAlertTime "
     "SessionLoggingEnabled NightMode"
 ).split()
 
@@ -192,14 +194,14 @@ def main():
     LastTime = time.monotonic()
     Tick = 0
     YoloDrowsyAcc = HeadDownAcc = HeadAwayAcc = CombinedAcc = 0.0
-    PerclosAcc = 0.0
+    PerclosAcc = LowBlinkAcc = 0.0
     ema_drowsy = DrowsyEMA(alpha=DrowsyEmaAlpha)
     perclos = PerclosTracker(window_seconds=PerclosWindowSeconds)
     blinks = BlinkMonitor(closed_threshold=EarClosedThreshold,
                           min_blink_seconds=EarMinBlinkSeconds,
                           microsleep_seconds=MicrosleepSeconds)
     latches = {name: AlertLatch(clear_seconds=ClearGraceSeconds)
-               for name in ("perclos", "microsleep")}
+               for name in ("perclos", "microsleep", "low_blink")}
     FaceLost = False
     FaceLostAccumulated = 0.0
     WasHeadDownBeforeLoss = WasDrowsyBeforeLoss = False
@@ -350,6 +352,7 @@ def main():
                         trip_started_at = time.time()
                         logger.session_start(session_id)
                         _start_pipeline()
+                        blinks.reset()
                         # Run calibration on first session if needed (non-blocking)
                         if _needs_calibration:
                             cal_session = CalibrationSession(duration=CalibrationDuration)
@@ -365,7 +368,16 @@ def main():
                         logger.session_stop(session_id)
                     trip_active = False
                     _stop_pipeline()
+                    blinks.reset()
                 elif command == "start_calibration":
+                    if inference is None or camera is None or not trip_active:
+                        calibration_status.update(
+                            state="failed", progress=0.0,
+                            error="monitoring session ended before calibration started",
+                            valid_samples=0)
+                        with calibration_lock:
+                            calibration_command_pending = False
+                        continue
                     duration = payload["duration"]
                     cal_session = CalibrationSession(duration=duration)
                     cal_session.start()
@@ -563,21 +575,26 @@ def main():
             blink_state = blinks.update(result.ear, Now)
             MicrosleepAlert = latches["microsleep"].update(
                 blink_state["microsleep"], 0.0 if TimerFrozen else DeltaTime)
+            low_blink_condition = (
+                blink_state["rate_ready"] and hp["valid"] and result.ear is not None
+                and not blink_state["closed"]
+                and blink_state["blinks_per_min"] < BlinkRateAlertPerMin)
+            LowBlinkAcc, LowBlinkFired = UpdateTimer(
+                low_blink_condition, LowBlinkAcc, DeltaTime,
+                BlinkRateAlertTime, Freeze=TimerFrozen)
+            LowBlinkAlert = latches["low_blink"].update(
+                LowBlinkFired, 0.0 if TimerFrozen else DeltaTime)
 
-            if MicrosleepAlert:
-                AlertMsg = AlertMessages["microsleep"]
-            elif CombinedAlert or HeadDownAlert:
-                AlertMsg = AlertMessages["combined"]
-            elif PerclosAlert:
-                AlertMsg = AlertMessages["perclos"]
-            elif FaceLostAlert:
-                AlertMsg = AlertMessages["face_lost"]
-            elif HeadAwayAlert:
-                AlertMsg = AlertMessages["head_away"]
-            elif YoloAlert:
-                AlertMsg = AlertMessages["yolo"]
-            else:
-                AlertMsg = None
+            AlertMsg = SelectAlert(
+                AlertMessages,
+                microsleep=MicrosleepAlert,
+                combined=CombinedAlert or HeadDownAlert,
+                perclos=PerclosAlert,
+                face_lost=FaceLostAlert,
+                head_away=HeadAwayAlert,
+                low_blink=LowBlinkAlert,
+                yolo=YoloAlert,
+            )
 
             if AlertMsg:
                 DrawAlertOverlay(annotated, Tick, AlertMsg)
@@ -659,12 +676,11 @@ def main():
 
             DisplayStats.tick()
             if not args.headless:
-                if PilHud:
-                    if hp["valid"] and hp["rvec"] is not None:
-                        DrawHeadAxes(annotated, hp["rvec"], hp["tvec"], hp["nose_pt"])
-                    draw_ms = DisplayStats.mean("draw")
-                    draw_fps = 1000.0 / draw_ms if draw_ms > 0 else 0.0
-                    annotated = RenderHud(annotated, HudState(
+                if hp["valid"] and hp["rvec"] is not None:
+                    DrawHeadAxes(annotated, hp["rvec"], hp["tvec"], hp["nose_pt"])
+                draw_ms = DisplayStats.mean("draw")
+                draw_fps = 1000.0 / draw_ms if draw_ms > 0 else 0.0
+                annotated = RenderHud(annotated, HudState(
                         attention=SmoothedAttention,
                         perclos=perclos_now,
                         max_drowsy=result.max_drowsy,
@@ -678,22 +694,7 @@ def main():
                         attention_history=attention_history,
                         last_seen=last_seen,
                         face_lost_progress=face_lost_progress,
-                    ))
-                else:
-                    if hp["valid"] and hp["rvec"] is not None:
-                        DrawHeadAxes(annotated, hp["rvec"], hp["tvec"], hp["nose_pt"])
-                    # Legacy HUD: draw the panel on its own dark column and put
-                    # it beside the video, so the camera feed stays uncovered.
-                    panel = np.zeros((annotated.shape[0], HudPanel, 3), dtype=np.uint8)
-                    DrawHud(panel, not FaceFound and not hp["valid"],
-                            AlertMsg is not None, result.max_drowsy, result.max_alert,
-                            AttentionScore=SmoothedAttention,
-                            HeadPose={"pitch": SmoothedPitch, "yaw": SmoothedYaw,
-                                      "roll": SmoothedRoll, "valid": hp["valid"]},
-                            HeadDown=HeadDown, LookingAway=LookingAway,
-                            HeadTilt=HeadTilt, IsFocused=IsFocused,
-                            IsUnfocused=IsUnfocused, FaceLost=FaceLost)
-                    annotated = np.hstack([annotated, panel])
+                ))
                 cv2.imshow("Drowsiness Detection", annotated)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):

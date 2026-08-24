@@ -73,9 +73,11 @@ def test_blink_rate_waits_for_complete_valid_observation_window():
 def test_missing_ear_does_not_advance_blink_observation():
     bm = BlinkMonitor(rate_window_seconds=10.0)
     bm.update(0.3, now=1.0)
+    bm.update(0.3, now=6.0)
     bm.update(None, now=20.0)
     state = bm.update(0.3, now=21.0)
     assert state["rate_ready"] is False
+    assert bm.update(0.3, now=26.0)["rate_ready"] is True
 
 
 def test_blink_monitor_reset_clears_rate_history():
@@ -88,3 +90,11 @@ def test_blink_monitor_reset_clears_rate_history():
     state = bm.update(0.3, now=2.0)
     assert state["blinks_per_min"] == 0
     assert state["rate_ready"] is False
+
+
+def test_old_blinks_expire_without_a_new_blink():
+    bm = BlinkMonitor(rate_window_seconds=10.0)
+    bm.update(0.0, now=1.0)
+    bm.update(0.3, now=1.2)
+    state = bm.update(0.3, now=20.0)
+    assert state["blinks_per_min"] == 0
