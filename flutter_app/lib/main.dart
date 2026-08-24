@@ -2,10 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'services/connection_service.dart';
 import 'services/local_backend.dart';
 import 'services/monitoring_client.dart';
 import 'theme.dart';
 import 'screens/app_shell.dart';
+import 'screens/mobile/mobile_app_shell.dart';
 
 void main() {
   const apiUrl =
@@ -28,18 +30,34 @@ class DriverMonitorApp extends StatefulWidget {
 
 class _DriverMonitorAppState extends State<DriverMonitorApp> {
   late final MonitoringClient client;
+  late final ConnectionService connectionService;
   late final LocalBackendProcess backend;
+  bool _ready = false;
 
   @override
   void initState() {
     super.initState();
     client = MonitoringClient(baseUrl: widget.apiUrl);
+    connectionService = ConnectionService(client: client);
     backend = LocalBackendProcess();
+    _init();
+  }
+
+  Future<void> _init() async {
+    // Load persisted connection state (backend URL + token).
+    await connectionService.load();
+
     if (widget.autoStartBackend) {
-      unawaited(_startBackend());
+      await _startBackend();
     } else {
-      client.connect();
+      // If we have stored credentials, reconnect; otherwise connect to default.
+      if (connectionService.isPaired && !connectionService.isExpired) {
+        await connectionService.reconnect();
+      } else {
+        client.connect();
+      }
     }
+    if (mounted) setState(() => _ready = true);
   }
 
   Future<void> _startBackend() async {
@@ -109,7 +127,22 @@ class _DriverMonitorAppState extends State<DriverMonitorApp> {
           behavior: SnackBarBehavior.floating,
         ),
       ),
-      home: AppShell(client: client),
+      home: _ready
+          ? LayoutBuilder(
+              builder: (context, constraints) {
+                final isMobile = constraints.maxWidth < AppBreakpoints.medium;
+                if (isMobile) {
+                  return MobileAppShell(connectionService: connectionService);
+                }
+                return AppShell(client: client);
+              },
+            )
+          : const Scaffold(
+              backgroundColor: AppColors.background,
+              body: Center(
+                child: CircularProgressIndicator(color: AppColors.accent),
+              ),
+            ),
     );
   }
 }

@@ -273,6 +273,10 @@ def main():
         from yolo.summary import BuildSessionHistory
         return BuildSessionHistory(args.log, limit=10)
 
+    def current_telemetry(session_id: str):
+        from yolo.summary import BuildSessionTelemetry
+        return BuildSessionTelemetry(args.log, session_id)
+
     def current_session():
         return {
             "id": session_id,
@@ -301,6 +305,7 @@ def main():
             command_handler=handle_api_command,
             summary_provider=current_summary,
             history_provider=current_history,
+            telemetry_provider=current_telemetry,
             metadata_provider=api_metadata,
             session_provider=current_session,
             auth_token=args.api_token,

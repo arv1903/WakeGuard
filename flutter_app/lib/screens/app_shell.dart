@@ -8,6 +8,7 @@ import '../theme.dart';
 import 'home_screen.dart';
 import 'live_monitor_screen.dart';
 import 'trip_analytics_screen.dart';
+import 'trip_log_screen.dart';
 import 'calibration_settings_screen.dart';
 import 'post_trip_summary_dialog.dart';
 
@@ -52,6 +53,13 @@ class _AppShellState extends State<AppShell> {
         widget.client.connectionState == BackendConnectionState.connected;
     if (_lastConnected == true && connected == false) {
       _showConnectionBanner('Backend disconnected — reconnecting...');
+      // Navigate away from Settings if currently selected, since it's hidden
+      // when disconnected.
+      if (_selectedIndex == 2 && !_isSessionActive) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) setState(() => _selectedIndex = 0);
+        });
+      }
     } else if (_lastConnected == false && connected == true) {
       _showConnectionBanner('Backend reconnected');
     }
@@ -222,7 +230,7 @@ class _AppShellState extends State<AppShell> {
     if (!_isSessionActive) {
       switch (_selectedIndex) {
         case 1:
-          return TripAnalyticsScreen(key: key, client: widget.client);
+          return TripLogScreen(key: key, client: widget.client);
         case 2:
           return CalibrationSettingsScreen(key: key, client: widget.client);
         default:
@@ -316,11 +324,23 @@ class _CompactSidebar extends StatelessWidget {
   final bool connected;
   final void Function(int) onSelect;
 
-  static const _items = [
-    _NavEntry(icon: Icons.videocam_outlined, label: 'Live Monitor'),
-    _NavEntry(icon: Icons.insights_outlined, label: 'Trip Analytics'),
-    _NavEntry(icon: Icons.settings_input_component_outlined, label: 'Settings'),
+  static const _sessionItems = [
+    _NavEntry(icon: Icons.videocam_outlined, label: 'Live Monitor', pageIndex: 0),
+    _NavEntry(icon: Icons.insights_outlined, label: 'Trip Analytics', pageIndex: 1),
+    _NavEntry(icon: Icons.settings_input_component_outlined, label: 'Settings', pageIndex: 2),
   ];
+
+  static const _idleItems = [
+    _NavEntry(icon: Icons.home_outlined, label: 'Dashboard', pageIndex: 0),
+    _NavEntry(icon: Icons.history, label: 'Trip Logs', pageIndex: 1),
+    _NavEntry(icon: Icons.settings_input_component_outlined, label: 'Settings', pageIndex: 2),
+  ];
+
+  List<_NavEntry> get _items {
+    final base = isSessionActive ? _sessionItems : _idleItems;
+    if (connected) return base;
+    return base.where((e) => e.label != 'Settings').toList();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -343,15 +363,15 @@ class _CompactSidebar extends StatelessWidget {
               padding: const EdgeInsets.only(bottom: 8),
               child: Semantics(
                 button: true,
-                selected: selectedIndex == i,
+                selected: selectedIndex == _items[i].pageIndex,
                 label: _items[i].label,
                 child: Tooltip(
                   message: _items[i].label,
                   child: GestureDetector(
-                      onTap: () => onSelect(i),
+                      onTap: () => onSelect(_items[i].pageIndex),
                       child: _SidebarIcon(
                           icon: _items[i].icon,
-                          selected: selectedIndex == i,
+                          selected: selectedIndex == _items[i].pageIndex,
                           showLiveBadge: i == 0 && isSessionActive)),
                 ),
               )),
@@ -414,9 +434,10 @@ class _CompactSidebar extends StatelessWidget {
 }
 
 class _NavEntry {
-  const _NavEntry({required this.icon, required this.label});
+  const _NavEntry({required this.icon, required this.label, required this.pageIndex});
   final IconData icon;
   final String label;
+  final int pageIndex;
 }
 
 class _SidebarIcon extends StatelessWidget {
@@ -536,10 +557,18 @@ class _TopHeader extends StatelessWidget {
                 onTap: () => onNavigate?.call(0)),
             const SizedBox(width: 4),
             _HeaderNavLink(
-                label: 'Settings',
-                icon: Icons.settings_outlined,
-                selected: selectedIndex == 2,
-                onTap: () => onNavigate?.call(2)),
+                label: 'Trip Logs',
+                icon: Icons.history,
+                selected: selectedIndex == 1,
+                onTap: () => onNavigate?.call(1)),
+            if (connected) ...[
+              const SizedBox(width: 4),
+              _HeaderNavLink(
+                  label: 'Settings',
+                  icon: Icons.settings_outlined,
+                  selected: selectedIndex == 2,
+                  onTap: () => onNavigate?.call(2)),
+            ],
           ],
         ] else ...[
           _ConnectionPill(connected: connected, color: color),

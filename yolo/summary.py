@@ -95,6 +95,42 @@ def BuildSessionHistory(log_path: str, limit: int = 10) -> list[dict]:
     return history[:limit]
 
 
+def BuildSessionTelemetry(log_path: str, session_id: str, limit: int = 600) -> list[dict]:
+    """Extract per-frame attention / perclos telemetry for a single session.
+
+    Returns at most *limit* samples (default 600 = 10 min at 1 Hz), each with
+    ``ts`` (relative seconds from session start), ``attention``, and ``perclos``.
+    """
+    frames: list[dict] = []
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                ev = json.loads(line)
+                if ev.get("session_id") != session_id:
+                    continue
+                if ev.get("type") != "frame":
+                    continue
+                frames.append(ev)
+    except FileNotFoundError:
+        return []
+
+    if not frames:
+        return []
+
+    start_ts = frames[0].get("ts", 0.0)
+    result = []
+    for ev in frames[-limit:]:
+        result.append({
+            "ts": round(ev.get("ts", 0.0) - start_ts, 2),
+            "attention": ev.get("attention", 0.0),
+            "perclos": ev.get("perclos", 0.0),
+        })
+    return result
+
+
 def PrintSummary(summary: dict) -> None:
     print("── Trip Summary ─────────────────────────────")
     print(f"Duration:      {summary['duration']:.0f}s")
