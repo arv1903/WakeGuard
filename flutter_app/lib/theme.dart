@@ -1,5 +1,66 @@
 import 'package:flutter/material.dart';
 
+// ─── Stitch Design System Tokens ──────────────────────────────────────────
+/// Material Design 3 dark color palette from Stitch mobile mockups.
+class Stitch {
+  Stitch._();
+
+  // Surface hierarchy (darkest → lightest)
+  static const background = Color(0xFF0E1416);
+  static const surface = Color(0xFF0E1416);
+  static const surfaceDim = Color(0xFF0E1416);
+  static const surfaceLowest = Color(0xFF090F11);
+  static const surfaceLow = Color(0xFF171D1E);
+  static const container = Color(0xFF1B2122);
+  static const containerHigh = Color(0xFF252B2D);
+  static const containerHighest = Color(0xFF303638);
+  static const surfaceBright = Color(0xFF343A3C);
+  static const surfaceVariant = Color(0xFF303638);
+
+  // On-surface text
+  static const onBackground = Color(0xFFDEE3E6);
+  static const onSurface = Color(0xFFDEE3E6);
+  static const onSurfaceVariant = Color(0xFFBCC9CD);
+
+  // Primary (cyan)
+  static const primary = Color(0xFF4CD7F6);
+  static const onPrimary = Color(0xFF003640);
+  static const primaryContainer = Color(0xFF06B6D4);
+  static const onPrimaryContainer = Color(0xFF00424F);
+  static const primaryFixedDim = Color(0xFF4CD7F6);
+
+  // Secondary (green)
+  static const secondary = Color(0xFF4EDEA3);
+  static const onSecondary = Color(0xFF003824);
+  static const secondaryContainer = Color(0xFF00A572);
+  static const onSecondaryContainer = Color(0xFF00311F);
+
+  // Tertiary (amber)
+  static const tertiary = Color(0xFFFFB95F);
+  static const onTertiary = Color(0xFF472A00);
+  static const tertiaryContainer = Color(0xFFE79400);
+  static const onTertiaryContainer = Color(0xFF563400);
+  static const tertiaryFixedDim = Color(0xFFFFB95F);
+
+  // Error
+  static const error = Color(0xFFFFB4AB);
+  static const onError = Color(0xFF690005);
+  static const errorContainer = Color(0xFF93000A);
+  static const onErrorContainer = Color(0xFFFFDAD6);
+
+  // Outline
+  static const outline = Color(0xFF869397);
+  static const outlineVariant = Color(0xFF3D494C);
+
+  // Semantic helpers
+  static Color severity(int level) {
+    if (level >= 4) return error;
+    if (level >= 3) return tertiaryContainer;
+    if (level >= 2) return tertiary;
+    return secondary;
+  }
+}
+
 /// Material 3 dark color system with Inter typography.
 class AppColors {
   AppColors._();

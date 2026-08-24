@@ -451,6 +451,26 @@ class MonitoringClient extends ChangeNotifier {
     return jsonDecode(body) as Map<String, dynamic>;
   }
 
+  Future<List<Map<String, dynamic>>> fetchSessionTelemetry(String sessionId) async {
+    try {
+      final request = await _http.getUrl(
+        Uri.parse('$_baseUrl/api/v1/sessions/$sessionId/telemetry'),
+      );
+      _headers().forEach(request.headers.add);
+      final response = await request.close();
+      final body = await response.transform(utf8.decoder).join();
+      if (response.statusCode != HttpStatus.ok) {
+        return [];
+      }
+      final data = jsonDecode(body) as Map<String, dynamic>;
+      final list = data['telemetry'] as List<dynamic>?;
+      if (list == null) return [];
+      return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
   Future<List<Map<String, dynamic>>> fetchTripHistory() async {
     try {
       final request = await _http.getUrl(

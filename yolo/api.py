@@ -31,6 +31,7 @@ _MAX_BODY_BYTES = 64 * 1024
 CommandHandler = Callable[[str, dict[str, Any]], dict[str, Any] | None]
 SummaryProvider = Callable[[], dict[str, Any]]
 MetadataProvider = Callable[[], dict[str, Any]]
+TelemetryProvider = Callable[[str], list[dict[str, Any]]]
 
 
 class _ApiServer(ThreadingHTTPServer):
@@ -190,7 +191,8 @@ class _RequestHandler(BaseHTTPRequestHandler):
         elif path == f"{API_PREFIX}/sessions/history":
             self._send_history()
         else:
-            self._error(404, "endpoint not found")
+            self._send_session_telemetry(path)
+
 
     def _is_local_address(self, addr: str) -> bool:
         if addr in ("127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"):
@@ -240,6 +242,25 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"history": []})
             return
         self._send_json(200, {"history": history})
+
+    def _send_session_telemetry(self, path: str) -> None:
+        prefix = f"{API_PREFIX}/sessions/"
+        if not path.startswith(prefix) or not path.endswith("/telemetry"):
+            self._error(404, "endpoint not found")
+            return
+        session_id = path[len(prefix):-len("/telemetry")]
+        if not session_id:
+            self._error(400, "session_id is required")
+            return
+        if self.api.telemetry_provider is None:
+            self._send_json(200, {"telemetry": []})
+            return
+        try:
+            telemetry = self.api.telemetry_provider(session_id)
+        except Exception:
+            self._send_json(200, {"telemetry": []})
+            return
+        self._send_json(200, {"telemetry": telemetry})
 
     def _send_frame(self) -> None:
         frame = self.api.latest_frame()
@@ -374,6 +395,7 @@ class MonitoringApi:
                  command_handler: CommandHandler | None = None,
                  summary_provider: SummaryProvider | None = None,
                  history_provider: Callable[[], list[dict]] | None = None,
+                 telemetry_provider: TelemetryProvider | None = None,
                  metadata_provider: MetadataProvider | None = None,
                  session_provider: MetadataProvider | None = None,
                  auth_token: str | None = None,
@@ -387,6 +409,7 @@ class MonitoringApi:
         self.command_handler = command_handler
         self.summary_provider = summary_provider
         self.history_provider = history_provider
+        self.telemetry_provider = telemetry_provider
         self.metadata_provider = metadata_provider
         self.session_provider = session_provider
         self.auth_token = auth_token
