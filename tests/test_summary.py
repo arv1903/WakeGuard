@@ -1,5 +1,5 @@
 from yolo.session_log import SessionLogger
-from yolo.summary import BuildSummary
+from yolo.summary import BuildSummary, PrintSummary
 
 
 def test_build_summary(tmp_path):
@@ -19,3 +19,33 @@ def test_build_summary(tmp_path):
     assert s["attention_min"] == 40.0
     assert s["attention_avg"] == 65.0
     assert s["perclos_max"] == 0.6
+
+
+def test_print_summary_with_data(capsys):
+    # Regression: conditional expressions inside f-string format specs
+    # ({v:.0f if v is not None else 0}) are invalid and always raised.
+    summary = {
+        "duration": 62.4,
+        "attention_avg": 65.0,
+        "attention_min": 40.0,
+        "perclos_max": 0.6,
+        "alert_count": 2,
+        "alerts_by_type": {"yolo": 1, "perclos": 1},
+    }
+    PrintSummary(summary)
+    out = capsys.readouterr().out
+    assert "Duration:      62s" in out
+    assert "Attention avg: 65  min: 40" in out
+    assert "PERCLOS max:   60%" in out
+    assert "Alerts:        2  {'yolo': 1, 'perclos': 1}" in out
+
+
+def test_print_summary_empty_log(tmp_path, capsys):
+    summary = BuildSummary(str(tmp_path / "missing.jsonl"))
+    assert summary["attention_avg"] is None
+    PrintSummary(summary)
+    out = capsys.readouterr().out
+    assert "Duration:      0s" in out
+    assert "Attention avg: 0  min: 0" in out
+    assert "PERCLOS max:   0" in out
+    assert "Alerts:        0  {}" in out

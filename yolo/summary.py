@@ -136,9 +136,14 @@ def PrintSummary(summary: dict) -> None:
     print(f"Duration:      {summary['duration']:.0f}s")
     att_avg = summary.get('attention_avg')
     att_min = summary.get('attention_min')
-    print(f"Attention avg: {att_avg:.0f if att_avg is not None else 0}  min: {att_min:.0f if att_min is not None else 0}")
+    # Guard before formatting: a conditional inside the format spec is
+    # applied to the value anyway and raises on None/invalid spec.
+    avg_str = f"{att_avg:.0f}" if att_avg is not None else "0"
+    min_str = f"{att_min:.0f}" if att_min is not None else "0"
+    print(f"Attention avg: {avg_str}  min: {min_str}")
     p_max = summary.get('perclos_max')
-    print(f"PERCLOS max:   {p_max:.0% if p_max is not None else 0}")
+    perclos_str = f"{p_max:.0%}" if p_max is not None else "0"
+    print(f"PERCLOS max:   {perclos_str}")
     print(f"Alerts:        {summary['alert_count']}  {summary['alerts_by_type']}")
 
 

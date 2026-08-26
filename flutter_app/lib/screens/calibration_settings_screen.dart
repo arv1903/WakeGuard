@@ -228,8 +228,13 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
                     ]),
                   ]);
             }
-            return Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            // Wrap, not Row: when the header text leaves too little room the
+            // toggle cluster drops to its own line instead of overflowing.
+            return Wrap(
+                alignment: WrapAlignment.spaceBetween,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 24,
+                runSpacing: 12,
                 children: [
                   const Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
