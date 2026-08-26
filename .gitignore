@@ -17,6 +17,9 @@ venv/
 # Temporary Telegram snapshot
 drowsy_alert.jpg
 
+# Rendered HUD preview (scripts/render_test_frame.py)
+hud_preview.png
+
 # IDE
 .vscode/
 .idea/
