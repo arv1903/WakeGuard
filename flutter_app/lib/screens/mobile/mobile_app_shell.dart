@@ -6,6 +6,7 @@ import 'connection_setup_screen.dart';
 import 'mobile_live_monitor_screen.dart';
 import 'mobile_history_screen.dart';
 import 'mobile_settings_screen.dart';
+import 'mobile_post_trip_screen.dart';
 
 /// Mobile shell with bottom navigation bar.
 ///
@@ -43,13 +44,27 @@ class _MobileAppShellState extends State<MobileAppShell> {
     final snap = widget.connectionService.client.snapshot;
     final active = snap.tripActive;
     if (active != _isSessionActive) {
+      final sessionEnded = _isSessionActive && !active;
       setState(() {
         _isSessionActive = active;
         if (active) _selectedIndex = 0; // Switch to monitor on session start
       });
+      if (sessionEnded) _showPostTripSummary();
     } else {
       setState(() {});
     }
+  }
+
+  void _showPostTripSummary() {
+    if (!mounted) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => MobilePostTripScreen(
+          client: widget.connectionService.client,
+        ),
+      ),
+    );
   }
 
   void _onConnectionUpdate() {

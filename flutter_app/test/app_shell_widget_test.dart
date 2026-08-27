@@ -32,7 +32,6 @@ void main() {
 
     test('HomeScreen onStartSession callback fires', () {
       var called = false;
-      // Verify the callback type matches what HomeScreen expects.
       final VoidCallback onStart = () {
         called = true;
       };
@@ -45,7 +44,7 @@ void main() {
       final void Function(int) onNavigate = (i) {
         navigatedTo = i;
       };
-      onNavigate(2); // Settings tab
+      onNavigate(2);
       expect(navigatedTo, 2);
     });
 
@@ -58,8 +57,7 @@ void main() {
     });
   });
 
-  testWidgets('reset to defaults restores calibration slider handles',
-      (tester) async {
+  testWidgets('reset to defaults restores Balanced preset', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1200, 900));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final client = _RecordingClient();
@@ -68,17 +66,33 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    final firstSlider = find.byType(Slider).first;
-    await tester.drag(firstSlider, const Offset(120, 0));
-    await tester.pump();
-    expect(tester.widget<Slider>(firstSlider).value, greaterThan(0.20));
+    // Tap the Alert preset
+    final beforeCount = client.commands.length;
+    await tester.tap(find.text('Alert'));
+    await tester.pumpAndSettle();
 
+    // Verify Alert preset sent 5 settings commands
+    final alertCommands = client.commands.sublist(beforeCount);
+    expect(alertCommands.length, 5);
+    expect(
+        alertCommands.any((c) =>
+            c['payload'] != null &&
+            (c['payload'] as Map).containsKey('ear_threshold')),
+        isTrue);
+
+    // Tap Reset to Defaults
+    final beforeResetCount = client.commands.length;
     await tester.tap(find.text('Reset to Defaults'));
     await tester.pumpAndSettle();
 
-    expect(tester.widget<Slider>(find.byType(Slider).first).value, 0.20);
+    // Verify reset sent Balanced preset values
+    final resetCommands = client.commands.sublist(beforeResetCount);
+    expect(resetCommands.isNotEmpty, isTrue);
     expect(
-        client.commands.last['payload'], containsPair('ear_threshold', 0.20));
+        resetCommands.any((c) =>
+            c['payload'] != null &&
+            (c['payload'] as Map)['ear_threshold'] == 0.20),
+        isTrue);
     client.dispose();
   });
 
