@@ -374,6 +374,23 @@ def main():
                     trip_active = False
                     _stop_pipeline()
                     blinks.reset()
+                    # Publish idle snapshot so SSE clients detect session end.
+                    snapshot_sequence += 1
+                    monitoring_store.publish(MonitoringSnapshot(
+                        sequence=snapshot_sequence, timestamp=time.time(),
+                        session_id=session_id, trip_started_at=trip_started_at,
+                        trip_active=False, attention=0, perclos=0, ema_drowsy=0,
+                        ear=None, eyes_closed=False, microsleep=False, blinks_per_min=0,
+                        pitch=0, yaw=0, roll=0, pose_valid=False, face_found=False,
+                        face_lost=False, face_lost_progress=0, head_down=False,
+                        looking_away=False, head_tilt=False, focused=False,
+                        unfocused=False, alert=None, alert_severity=0,
+                        alarm_muted=alarm_muted, fps=0,
+                        calibration_state=calibration_status["state"],
+                        calibration_progress=calibration_status["progress"],
+                        calibration_error=calibration_status["error"],
+                        calibration_valid_samples=calibration_status["valid_samples"],
+                    ))
                 elif command == "start_calibration":
                     if inference is None or camera is None or not trip_active:
                         calibration_status.update(

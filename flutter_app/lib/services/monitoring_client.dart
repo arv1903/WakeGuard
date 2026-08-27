@@ -147,6 +147,12 @@ class MonitoringClient extends ChangeNotifier {
       ValueNotifier<Uint8List?>(null);
   final _SnapshotSmoother _smoother = _SnapshotSmoother();
 
+  // ── Persistent UI settings (survive widget rebuilds) ─────────────────
+  String selectedPreset = 'Balanced';
+  bool alarmEnabled = true;
+  bool telegramEnabled = true;
+  bool loggingEnabled = false;
+
   String get baseUrl => _baseUrl;
 
   /// Latest JPEG frame from the persistent MJPEG stream, or null before the

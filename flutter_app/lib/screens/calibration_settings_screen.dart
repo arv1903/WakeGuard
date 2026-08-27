@@ -18,22 +18,48 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
   bool _commandPending = false;
   String? _lastCalibrationState;
   late AnimationController _ringCtrl;
-  late Map<String, double> _thresholds;
+  String _selectedPreset = 'Balanced';
 
-  /// Module toggle state — owned here so it survives widget rebuilds.
-  final Map<String, bool> _moduleState = {
-    'telegram_enabled': true,
-    'alarm_enabled': true,
-    'logging_enabled': false,
+  late Map<String, bool> _moduleState;
+
+  static const Map<String, Map<String, double>> _presetValues = {
+    'Alert': {
+      'ear_threshold': 0.15,
+      'microsleep_duration': 0.8,
+      'pitch_threshold': 10.0,
+      'yaw_threshold': 15.0,
+      'roll_threshold': 6.0,
+    },
+    'Balanced': {
+      'ear_threshold': 0.20,
+      'microsleep_duration': 1.5,
+      'pitch_threshold': 20.0,
+      'yaw_threshold': 30.0,
+      'roll_threshold': 10.0,
+    },
+    'Relaxed': {
+      'ear_threshold': 0.25,
+      'microsleep_duration': 2.5,
+      'pitch_threshold': 28.0,
+      'yaw_threshold': 38.0,
+      'roll_threshold': 18.0,
+    },
   };
 
   @override
   void initState() {
     super.initState();
-    _thresholds = Map<String, double>.from(_defaults);
     _ringCtrl =
         AnimationController(vsync: this, duration: const Duration(seconds: 4));
     _lastCalibrationState = widget.client.snapshot.calibrationState;
+    // Read persistent settings from the client so they survive tab switches.
+    final c = widget.client;
+    _selectedPreset = c.selectedPreset;
+    _moduleState = {
+      'telegram_enabled': c.telegramEnabled,
+      'alarm_enabled': c.alarmEnabled,
+      'logging_enabled': c.loggingEnabled,
+    };
     widget.client.addListener(_onClientUpdate);
     if (_lastCalibrationState == 'running') _ringCtrl.repeat();
   }
@@ -79,13 +105,28 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
     } catch (_) {}
   }
 
+  Future<void> _applyPreset(String name) async {
+    final values = _presetValues[name]!;
+    setState(() => _selectedPreset = name);
+    widget.client.selectedPreset = name;
+    for (final entry in values.entries) {
+      await _sendSetting(entry.key, entry.value);
+    }
+  }
+
   Future<void> _toggleModule(String key, bool value) async {
     setState(() => _moduleState[key] = value);
+    // Persist to client so it survives tab switches.
+    if (key == 'alarm_enabled') widget.client.alarmEnabled = value;
+    if (key == 'telegram_enabled') widget.client.telegramEnabled = value;
+    if (key == 'logging_enabled') widget.client.loggingEnabled = value;
     try {
       await widget.client.sendCommand('/api/v1/settings', {key: value});
     } catch (_) {
-      // Revert on failure
       setState(() => _moduleState[key] = !value);
+      if (key == 'alarm_enabled') widget.client.alarmEnabled = !value;
+      if (key == 'telegram_enabled') widget.client.telegramEnabled = !value;
+      if (key == 'logging_enabled') widget.client.loggingEnabled = !value;
     }
   }
 
@@ -97,7 +138,7 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
           .sendCommand('/api/v1/calibration/start', {'duration': 4});
       if (mounted)
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('Calibration started — keep looking straight ahead'),
+            content: Text('Calibration started -- keep looking straight ahead'),
             duration: Duration(seconds: 2)));
     } catch (e) {
       if (mounted) {
@@ -120,187 +161,111 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
         const SizedBox(height: 24),
         _buildCalibrationCard(),
         const SizedBox(height: 24),
-        LayoutBuilder(builder: (context, constraints) {
-          final isNarrow = constraints.maxWidth < 1100;
-          if (isNarrow) {
-            return Column(children: [
-              _ThresholdCard(
-                icon: Icons.visibility,
-                title: 'Eye & EAR Thresholds',
-                children: [
-                  _slider('EarClosed (EAR Threshold)', 'ear_threshold', 0.10,
-                      0.30, (v) => v.toStringAsFixed(2)),
-                  const SizedBox(height: 24),
-                  _slider('Microsleep Duration (s)', 'microsleep_duration', 0.5,
-                      3.5, (v) => '${v.toStringAsFixed(1)}s'),
-                ],
-              ),
-              const SizedBox(height: 24),
-              _ThresholdCard(
-                icon: Icons.threed_rotation,
-                title: 'Head Pose Distraction',
-                children: [
-                  _slider('Pitch (Up/Down) \u00B1\u00B0', 'pitch_threshold', 5,
-                      30, (v) => '${v.toStringAsFixed(1)}\u00B0'),
-                  const SizedBox(height: 24),
-                  _slider('Yaw (Left/Right) \u00B1\u00B0', 'yaw_threshold', 10,
-                      40, (v) => '${v.toStringAsFixed(1)}\u00B0'),
-                  const SizedBox(height: 24),
-                  _slider('Roll (Tilt) \u00B1\u00B0', 'roll_threshold', 5, 20,
-                      (v) => '${v.toStringAsFixed(1)}\u00B0'),
-                ],
-              ),
-            ]);
-          }
-          return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Expanded(
-                child: _ThresholdCard(
-              icon: Icons.visibility,
-              title: 'Eye & EAR Thresholds',
-              children: [
-                _slider('EarClosed (EAR Threshold)', 'ear_threshold', 0.10,
-                    0.30, (v) => v.toStringAsFixed(2)),
-                const SizedBox(height: 24),
-                _slider('Microsleep Duration (s)', 'microsleep_duration', 0.5,
-                    3.5, (v) => '${v.toStringAsFixed(1)}s'),
-              ],
-            )),
-            const SizedBox(width: 24),
-            Expanded(
-                child: _ThresholdCard(
-              icon: Icons.threed_rotation,
-              title: 'Head Pose Distraction',
-              children: [
-                _slider('Pitch (Up/Down) \u00B1\u00B0', 'pitch_threshold', 5,
-                    30, (v) => '${v.toStringAsFixed(1)}\u00B0'),
-                const SizedBox(height: 24),
-                _slider('Yaw (Left/Right) \u00B1\u00B0', 'yaw_threshold', 10,
-                    40, (v) => '${v.toStringAsFixed(1)}\u00B0'),
-                const SizedBox(height: 24),
-                _slider('Roll (Tilt) \u00B1\u00B0', 'roll_threshold', 5, 20,
-                    (v) => '${v.toStringAsFixed(1)}\u00B0'),
-              ],
-            )),
-          ]);
-        }),
+        _buildSensitivitySection(),
         const SizedBox(height: 24),
-        Card(
-            child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: LayoutBuilder(builder: (context, c) {
-            final narrow = c.maxWidth < 900;
-            if (narrow) {
-              return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('SYSTEM MODULES',
-                              style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w700,
-                                  letterSpacing: 1,
-                                  color: AppColors.textSecondary)),
-                          SizedBox(height: 4),
-                          Text('Enable or disable auxiliary output services.',
-                              style: TextStyle(
-                                  fontSize: 14,
-                                  color: AppColors.textSecondary)),
-                        ]),
-                    const SizedBox(height: 16),
-                    Wrap(spacing: 16, runSpacing: 8, children: [
-                      _ModuleToggle(
-                          icon: Icons.photo_camera_outlined,
-                          label: 'Telegram Snapshot',
-                          value: _moduleState['telegram_enabled']!,
-                          onChanged: (v) => _toggleModule('telegram_enabled', v)),
-                      _ModuleToggle(
-                          icon: Icons.volume_up,
-                          label: 'Windows Audio Alarm',
-                          value: _moduleState['alarm_enabled']!,
-                          onChanged: (v) => _toggleModule('alarm_enabled', v)),
-                      _ModuleToggle(
-                          icon: Icons.subject,
-                          label: 'Threaded Logging',
-                          value: _moduleState['logging_enabled']!,
-                          onChanged: (v) => _toggleModule('logging_enabled', v)),
-                    ]),
-                  ]);
-            }
-            // Wrap, not Row: when the header text leaves too little room the
-            // toggle cluster drops to its own line instead of overflowing.
-            return Wrap(
-                alignment: WrapAlignment.spaceBetween,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                spacing: 24,
-                runSpacing: 12,
-                children: [
-                  const Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('SYSTEM MODULES',
-                            style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                                letterSpacing: 1,
-                                color: AppColors.textSecondary)),
-                        SizedBox(height: 4),
-                        Text('Enable or disable auxiliary output services.',
-                            style: TextStyle(
-                                fontSize: 14, color: AppColors.textSecondary)),
-                      ]),
-                  Row(children: [
-                    _ModuleToggle(
-                        icon: Icons.photo_camera_outlined,
-                        label: 'Telegram Snapshot',
-                        value: _moduleState['telegram_enabled']!,
-                        onChanged: (v) => _toggleModule('telegram_enabled', v)),
-                    const SizedBox(width: 24),
-                    _ModuleToggle(
-                        icon: Icons.volume_up,
-                        label: 'Windows Audio Alarm',
-                        value: _moduleState['alarm_enabled']!,
-                        onChanged: (v) => _toggleModule('alarm_enabled', v)),
-                    const SizedBox(width: 24),
-                    _ModuleToggle(
-                        icon: Icons.subject,
-                        label: 'Threaded Logging',
-                        value: _moduleState['logging_enabled']!,
-                        onChanged: (v) => _toggleModule('logging_enabled', v)),
-                  ]),
-                ]);
-          }),
-        )),
+        _buildModulesSection(),
       ]),
     ));
   }
 
-  // Default values used by Reset to Defaults.
-  static const _defaults = {
-    'ear_threshold': 0.20,
-    'microsleep_duration': 1.5,
-    'pitch_threshold': 20.0,
-    'yaw_threshold': 30.0,
-    'roll_threshold': 10.0,
-  };
+  Widget _buildSensitivitySection() {
+    final presets = [
+      (
+        name: 'Alert',
+        icon: Icons.warning_amber_rounded,
+        description: 'Detects issues early with tighter thresholds',
+        color: AppColors.alertOrange,
+      ),
+      (
+        name: 'Balanced',
+        icon: Icons.check_circle_outline,
+        description: 'Recommended for most drivers',
+        color: AppColors.focusedGreen,
+      ),
+      (
+        name: 'Relaxed',
+        icon: Icons.do_not_disturb_on_outlined,
+        description: 'Fewer false alerts, more leeway',
+        color: AppColors.accent,
+      ),
+    ];
 
-  Widget _slider(String label, String key, double min, double max,
-      String Function(double) format) {
-    return _SliderRow(
-      label: label,
-      value: _thresholds[key]!,
-      min: min,
-      max: max,
-      format: format,
-      onChanged: (value) => setState(() => _thresholds[key] = value),
-      onEnd: (value) => _sendSetting(key, value),
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: LayoutBuilder(builder: (context, constraints) {
+          final isNarrow = constraints.maxWidth < 700;
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                        color: AppColors.surface2,
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: const Color(0x44444748))),
+                    child: const Icon(Icons.tune,
+                        size: 18, color: AppColors.textPrimary)),
+                const SizedBox(width: 12),
+                const Expanded(
+                    child: Text('Detection Sensitivity',
+                        style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.textPrimary))),
+              ]),
+              const SizedBox(height: 4),
+              const Text(
+                  'Choose how aggressively the system monitors for drowsiness and distraction.',
+                  style:
+                      TextStyle(fontSize: 14, color: AppColors.textSecondary)),
+              const SizedBox(height: 20),
+              if (isNarrow)
+                Column(
+                    children: presets
+                        .map((p) => Padding(
+                              padding: const EdgeInsets.only(bottom: 12),
+                              child: _SensitivityPreset(
+                                name: p.name,
+                                icon: p.icon,
+                                description: p.description,
+                                accentColor: p.color,
+                                selected: _selectedPreset == p.name,
+                                onTap: () => _applyPreset(p.name),
+                              ),
+                            ))
+                        .toList())
+              else
+                Row(
+                    children: presets
+                        .map((p) => Expanded(
+                              child: Padding(
+                                padding: EdgeInsets.only(
+                                    right: p != presets.last ? 12 : 0),
+                                child: _SensitivityPreset(
+                                  name: p.name,
+                                  icon: p.icon,
+                                  description: p.description,
+                                  accentColor: p.color,
+                                  selected: _selectedPreset == p.name,
+                                  onTap: () => _applyPreset(p.name),
+                                ),
+                              ),
+                            ))
+                        .toList()),
+            ],
+          );
+        }),
+      ),
     );
   }
 
   Future<void> _resetToDefaults() async {
     try {
-      await widget.client.sendCommand('/api/v1/settings', _defaults);
+      await widget.client
+          .sendCommand('/api/v1/settings', _presetValues['Balanced']!);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -308,17 +273,105 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
             behavior: SnackBarBehavior.floating,
           ),
         );
-        setState(() => _thresholds = Map<String, double>.from(_defaults));
+        setState(() => _selectedPreset = 'Balanced');
+        widget.client.selectedPreset = 'Balanced';
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-              content: Text('Reset failed: $e'),
-              backgroundColor: AppColors.alertRed),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Reset failed: $e'),
+            backgroundColor: AppColors.alertRed));
       }
     }
+  }
+
+  Widget _buildModulesSection() {
+    return Card(
+        child: Padding(
+      padding: const EdgeInsets.all(24),
+      child: LayoutBuilder(builder: (context, c) {
+        final narrow = c.maxWidth < 900;
+        if (narrow) {
+          return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('SYSTEM MODULES',
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 1,
+                              color: AppColors.textSecondary)),
+                      SizedBox(height: 4),
+                      Text('Enable or disable auxiliary output services.',
+                          style: TextStyle(
+                              fontSize: 14,
+                              color: AppColors.textSecondary)),
+                    ]),
+                const SizedBox(height: 16),
+                Wrap(spacing: 16, runSpacing: 8, children: [
+                  _ModuleToggle(
+                      icon: Icons.photo_camera_outlined,
+                      label: 'Telegram Snapshot',
+                      value: _moduleState['telegram_enabled']!,
+                      onChanged: (v) => _toggleModule('telegram_enabled', v)),
+                  _ModuleToggle(
+                      icon: Icons.volume_up,
+                      label: 'Windows Audio Alarm',
+                      value: _moduleState['alarm_enabled']!,
+                      onChanged: (v) => _toggleModule('alarm_enabled', v)),
+                  _ModuleToggle(
+                      icon: Icons.subject,
+                      label: 'Threaded Logging',
+                      value: _moduleState['logging_enabled']!,
+                      onChanged: (v) => _toggleModule('logging_enabled', v)),
+                ]),
+              ]);
+        }
+        return Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            spacing: 24,
+            runSpacing: 12,
+            children: [
+              const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('SYSTEM MODULES',
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 1,
+                            color: AppColors.textSecondary)),
+                    SizedBox(height: 4),
+                    Text('Enable or disable auxiliary output services.',
+                        style: TextStyle(
+                            fontSize: 14, color: AppColors.textSecondary)),
+                  ]),
+              Row(children: [
+                _ModuleToggle(
+                    icon: Icons.photo_camera_outlined,
+                    label: 'Telegram Snapshot',
+                    value: _moduleState['telegram_enabled']!,
+                    onChanged: (v) => _toggleModule('telegram_enabled', v)),
+                const SizedBox(width: 24),
+                _ModuleToggle(
+                    icon: Icons.volume_up,
+                    label: 'Windows Audio Alarm',
+                    value: _moduleState['alarm_enabled']!,
+                    onChanged: (v) => _toggleModule('alarm_enabled', v)),
+                const SizedBox(width: 24),
+                _ModuleToggle(
+                    icon: Icons.subject,
+                    label: 'Threaded Logging',
+                    value: _moduleState['logging_enabled']!,
+                    onChanged: (v) => _toggleModule('logging_enabled', v)),
+              ]),
+            ]);
+      }),
+    ));
   }
 
   Widget _buildHeader() {
@@ -528,7 +581,7 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
   }
 }
 
-// ─── Calibration Ring Painter ───────────────────────────────────────────────
+// --- Calibration Ring Painter ---
 
 class _CalibrationRingPainter extends CustomPainter {
   _CalibrationRingPainter(
@@ -542,7 +595,6 @@ class _CalibrationRingPainter extends CustomPainter {
     final center = Offset(size.width / 2, size.height / 2);
     final radius = size.width / 2 - 8;
 
-    // Track
     canvas.drawCircle(
         center,
         radius,
@@ -551,10 +603,8 @@ class _CalibrationRingPainter extends CustomPainter {
           ..style = PaintingStyle.stroke
           ..strokeWidth = 8);
 
-    // Progress arc
     final sweepAngle = 2 * math.pi * progress;
     if (sweepAngle > 0) {
-      // Glow
       canvas.drawArc(
         Rect.fromCircle(center: center, radius: radius),
         -math.pi / 2,
@@ -567,7 +617,6 @@ class _CalibrationRingPainter extends CustomPainter {
           ..strokeCap = StrokeCap.round
           ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
       );
-      // Stroke
       canvas.drawArc(
         Rect.fromCircle(center: center, radius: radius),
         -math.pi / 2,
@@ -581,7 +630,6 @@ class _CalibrationRingPainter extends CustomPainter {
       );
     }
 
-    // Animated rotating dot during calibration
     if (active) {
       final dotAngle = animValue * 2 * math.pi;
       final dotOffset = Offset(
@@ -605,104 +653,67 @@ class _CalibrationRingPainter extends CustomPainter {
       old.active != active;
 }
 
-// ─── Helper Widgets ─────────────────────────────────────────────────────────
+// --- Helper Widgets ---
 
-class _ThresholdCard extends StatelessWidget {
-  const _ThresholdCard(
-      {required this.icon, required this.title, required this.children});
+class _SensitivityPreset extends StatelessWidget {
+  const _SensitivityPreset({
+    required this.name,
+    required this.icon,
+    required this.description,
+    required this.accentColor,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String name;
   final IconData icon;
-  final String title;
-  final List<Widget> children;
+  final String description;
+  final Color accentColor;
+  final bool selected;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-        child: Padding(
-      padding: const EdgeInsets.all(24),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          Container(
-              width: 32,
-              height: 32,
-              decoration: BoxDecoration(
-                  color: AppColors.surface2,
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: const Color(0x44444748))),
-              child: Icon(icon, size: 18, color: AppColors.textPrimary)),
-          const SizedBox(width: 12),
-          Expanded(
-              child: Text(title,
-                  style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textPrimary),
-                  overflow: TextOverflow.ellipsis)),
-        ]),
-        const SizedBox(height: 16),
-        ...children,
-      ]),
-    ));
-  }
-}
-
-class _SliderRow extends StatelessWidget {
-  const _SliderRow(
-      {required this.label,
-      required this.value,
-      required this.min,
-      required this.max,
-      required this.format,
-      required this.onChanged,
-      this.onEnd});
-  final String label;
-  final double value, min, max;
-  final String Function(double) format;
-  final ValueChanged<double> onChanged;
-  final ValueChanged<double>? onEnd;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Expanded(
-            child: Text(label,
-                style: const TextStyle(
-                    fontSize: 14, color: AppColors.textSecondary),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis)),
-        const SizedBox(width: 8),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+    return Material(
+      color: selected
+          ? accentColor.withValues(alpha: 0.08)
+          : AppColors.surface2,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-              color: AppColors.surface2,
-              borderRadius: BorderRadius.circular(4)),
-          child: Text(format(value),
-              style: const TextStyle(
-                  fontSize: 13,
-                  fontFamily: 'monospace',
-                  color: AppColors.textPrimary)),
-        ),
-      ]),
-      const SizedBox(height: 8),
-      SliderTheme(
-        data: SliderTheme.of(context).copyWith(
-          trackHeight: 4,
-          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-          overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-          activeTrackColor: AppColors.textPrimary,
-          inactiveTrackColor: AppColors.surface2,
-          thumbColor: AppColors.textPrimary,
-          overlayColor: AppColors.textPrimary.withValues(alpha: 0.1),
-        ),
-        child: Slider(
-          value: value,
-          min: min,
-          max: max,
-          onChanged: onChanged,
-          onChangeEnd: onEnd,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: selected
+                  ? accentColor.withValues(alpha: 0.6)
+                  : const Color(0x44444748),
+              width: selected ? 1.5 : 1,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                Icon(icon, size: 20, color: accentColor),
+                const SizedBox(width: 8),
+                Text(name,
+                    style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: selected ? accentColor : AppColors.textPrimary)),
+              ]),
+              const SizedBox(height: 6),
+              Text(description,
+                  style: const TextStyle(
+                      fontSize: 12, color: AppColors.textSecondary)),
+            ],
+          ),
         ),
       ),
-    ]);
+    );
   }
 }
 
