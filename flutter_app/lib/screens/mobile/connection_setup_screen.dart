@@ -86,7 +86,8 @@ class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
       final body = await response.transform(utf8.decoder).join();
 
       if (response.statusCode == 200) {
-        // Connected — reconnect the SSE/MJPEG streams.
+        // Connected — backend needs no token; unlock the dashboard.
+        await widget.connectionService.markNoAuth(normalised);
         client.connect();
         _savedUrl = normalised;
         setState(() {

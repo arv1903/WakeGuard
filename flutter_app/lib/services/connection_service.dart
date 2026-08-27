@@ -18,12 +18,13 @@ class ConnectionService extends ChangeNotifier {
   String? _bearerToken;
   DateTime? _tokenExpiresAt;
   bool _initialised = false;
+  bool _noAuth = false;
 
   // ── Getters ──────────────────────────────────────────────────────────────
 
   String? get backendUrl => _backendUrl;
   String? get bearerToken => _bearerToken;
-  bool get isPaired => _bearerToken != null && _bearerToken!.isNotEmpty;
+  bool get isPaired => _noAuth || (_bearerToken != null && _bearerToken!.isNotEmpty);
   bool get isExpired =>
       _tokenExpiresAt != null && DateTime.now().isAfter(_tokenExpiresAt!);
   bool get isInitialised => _initialised;
@@ -39,12 +40,14 @@ class ConnectionService extends ChangeNotifier {
   static const _keyUrl = 'wg_backend_url';
   static const _keyToken = 'wg_bearer_token';
   static const _keyExpiry = 'wg_token_expiry_ms';
+  static const _keyNoAuth = 'wg_no_auth';
 
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     _backendUrl = prefs.getString(_keyUrl);
     final token = prefs.getString(_keyToken);
     final expiryMs = prefs.getInt(_keyExpiry);
+    _noAuth = prefs.getBool(_keyNoAuth) == true;
 
     if (token != null && token.isNotEmpty) {
       _bearerToken = token;
@@ -74,6 +77,7 @@ class ConnectionService extends ChangeNotifier {
     } else {
       await prefs.remove(_keyExpiry);
     }
+    await prefs.setBool(_keyNoAuth, _noAuth);
   }
 
   // ── Connection ───────────────────────────────────────────────────────────
@@ -86,6 +90,16 @@ class ConnectionService extends ChangeNotifier {
       // Manual tokens — no known expiry; set 24h from now as a guess.
       _tokenExpiresAt = DateTime.now().add(const Duration(hours: 24));
     }
+    await _save();
+    _applyToClient();
+    notifyListeners();
+  }
+
+  /// Mark this connection as unauthenticated (backend requires no token).
+  Future<void> markNoAuth(String url) async {
+    _backendUrl = url;
+    _noAuth = true;
+    _tokenExpiresAt = DateTime.now().add(const Duration(hours: 24));
     await _save();
     _applyToClient();
     notifyListeners();
@@ -114,6 +128,7 @@ class ConnectionService extends ChangeNotifier {
     _bearerToken = null;
     _tokenExpiresAt = null;
     _backendUrl = null;
+    _noAuth = false;
     client.token = null;
     client.disconnect();
     await _save();

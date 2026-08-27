@@ -59,18 +59,23 @@ class _MobileHistoryScreenState extends State<MobileHistoryScreen> {
     }
   }
 
+  /// Parse [started_at] which may be a unix timestamp (num) or ISO string.
+  DateTime? _parseStartedAt(dynamic value) {
+    if (value == null) return null;
+    if (value is num) return DateTime.fromMillisecondsSinceEpoch((value * 1000).toInt());
+    if (value is String) return DateTime.tryParse(value);
+    return null;
+  }
+
   List<Map<String, dynamic>> get _filteredTrips {
     return _trips.where((trip) {
       final score = (trip['safety_score'] as num?)?.toDouble() ?? 0;
       if (score < _minSafety || score > _maxSafety) return false;
 
-      final startedStr = trip['started_at'] as String?;
-      if (startedStr != null) {
-        final started = DateTime.tryParse(startedStr);
-        if (started != null) {
-          if (_dateFrom != null && started.isBefore(_dateFrom!)) return false;
-          if (_dateTo != null && started.isAfter(_dateTo!)) return false;
-        }
+      final started = _parseStartedAt(trip['started_at']);
+      if (started != null) {
+        if (_dateFrom != null && started.isBefore(_dateFrom!)) return false;
+        if (_dateTo != null && started.isAfter(_dateTo!)) return false;
       }
       return true;
     }).toList();
@@ -91,10 +96,9 @@ class _MobileHistoryScreenState extends State<MobileHistoryScreen> {
     return '${m}m';
   }
 
-  String _formatDate(String? isoString) {
-    if (isoString == null) return '—';
-    final dt = DateTime.tryParse(isoString);
-    if (dt == null) return isoString;
+  String _formatDate(dynamic value) {
+    final dt = _parseStartedAt(value);
+    if (dt == null) return '—';
     final months = [
       '', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
       'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
@@ -366,7 +370,7 @@ class _MobileHistoryScreenState extends State<MobileHistoryScreen> {
     final duration = _formatDuration(trip['duration_s']);
     final attention = (trip['avg_attention'] as num?)?.round() ?? 0;
     final alerts = (trip['alert_count'] as num?)?.toInt() ?? 0;
-    final dateStr = _formatDate(trip['started_at'] as String?);
+    final dateStr = _formatDate(trip['started_at']);
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -414,7 +418,7 @@ class _MobileHistoryScreenState extends State<MobileHistoryScreen> {
                                 ),
                                 const SizedBox(height: 2),
                                 Text(
-                                  trip['label'] as String? ?? '',
+                                  '${trip['label'] ?? ''}',
                                   style: const TextStyle(
                                     fontSize: 12,
                                     color: Stitch.onSurfaceVariant,
