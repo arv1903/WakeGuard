@@ -40,7 +40,7 @@ class _DriverMonitorAppState extends State<DriverMonitorApp> {
   void initState() {
     super.initState();
     client = MonitoringClient(baseUrl: widget.apiUrl);
-    connectionService = ConnectionService(client: client);
+    connectionService = ConnectionService(client: client, authService: authService);
     authService = AuthService();
     backend = LocalBackendProcess();
     _init();
