@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../services/auth_service.dart';
 import '../../services/connection_service.dart';
 import '../../theme.dart';
 import 'connection_setup_screen.dart';
@@ -13,9 +14,14 @@ import 'mobile_post_trip_screen.dart';
 /// Shows [ConnectionSetupScreen] when no valid stored connection exists,
 /// otherwise renders the 3-tab bottom nav (Monitor / History / Settings).
 class MobileAppShell extends StatefulWidget {
-  const MobileAppShell({super.key, required this.connectionService});
+  const MobileAppShell({
+    super.key,
+    required this.connectionService,
+    required this.authService,
+  });
 
   final ConnectionService connectionService;
+  final AuthService authService;
 
   @override
   State<MobileAppShell> createState() => _MobileAppShellState();
@@ -47,7 +53,7 @@ class _MobileAppShellState extends State<MobileAppShell> {
       final sessionEnded = _isSessionActive && !active;
       setState(() {
         _isSessionActive = active;
-        if (active) _selectedIndex = 0; // Switch to monitor on session start
+        if (active) _selectedIndex = 0;
       });
       if (sessionEnded) _showPostTripSummary();
     } else {
@@ -75,7 +81,6 @@ class _MobileAppShellState extends State<MobileAppShell> {
   Widget build(BuildContext context) {
     final cs = widget.connectionService;
 
-    // Show setup screen if not connected / no stored credentials
     if (!cs.isInitialised) {
       return const Scaffold(
         backgroundColor: Stitch.background,
@@ -86,7 +91,10 @@ class _MobileAppShellState extends State<MobileAppShell> {
     }
 
     if (!cs.isPaired || cs.isExpired) {
-      return ConnectionSetupScreen(connectionService: cs);
+      return ConnectionSetupScreen(
+        connectionService: cs,
+        authService: widget.authService,
+      );
     }
 
     return _buildShell();
@@ -99,9 +107,7 @@ class _MobileAppShellState extends State<MobileAppShell> {
         bottom: false,
         child: Column(
           children: [
-            // Top header
             _buildHeader(),
-            // Page content
             Expanded(child: _buildPage()),
           ],
         ),
@@ -111,7 +117,7 @@ class _MobileAppShellState extends State<MobileAppShell> {
   }
 
   Widget _buildHeader() {
-    final titles = ['Monitor', 'History', 'Settings'];
+    const titles = ['Monitor', 'History', 'Settings'];
     return Container(
       height: 64,
       padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -127,28 +133,66 @@ class _MobileAppShellState extends State<MobileAppShell> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(
-            titles[_selectedIndex],
-            style: const TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.w600,
-              color: Stitch.onSurface,
-              letterSpacing: -0.5,
-            ),
+          // Logo + title
+          Row(
+            children: [
+              Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: Stitch.primary.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(
+                  Icons.shield,
+                  size: 18,
+                  color: Stitch.primary,
+                ),
+              ),
+              const SizedBox(width: 10),
+              const Text(
+                'WakeGuard',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                  color: Stitch.onSurface,
+                  letterSpacing: -0.3,
+                ),
+              ),
+            ],
           ),
-          // Connection status avatar
-          Container(
-            width: 32,
-            height: 32,
-            decoration: const BoxDecoration(
-              color: Stitch.primary,
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              Icons.person,
-              size: 18,
-              color: Stitch.onPrimary,
-            ),
+          // Page label + avatar
+          Row(
+            children: [
+              Text(
+                titles[_selectedIndex],
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontFamily: 'JetBrains Mono',
+                  fontWeight: FontWeight.w500,
+                  color: Stitch.onSurfaceVariant,
+                  letterSpacing: 1.5,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: Stitch.primary,
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: Stitch.outlineVariant,
+                    width: 1,
+                  ),
+                ),
+                child: Icon(
+                  Icons.person,
+                  size: 18,
+                  color: Stitch.onPrimary,
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -168,8 +212,9 @@ class _MobileAppShellState extends State<MobileAppShell> {
       case 2:
         return MobileSettingsScreen(
           connectionService: widget.connectionService,
+          authService: widget.authService,
           onForgetDevice: () {
-            setState(() {}); // Rebuild to show setup screen
+            setState(() {});
           },
         );
       default:
@@ -216,8 +261,6 @@ class _MobileAppShellState extends State<MobileAppShell> {
   }
 }
 
-// ─── Nav Item ────────────────────────────────────────────────────────────────
-
 class _NavItem extends StatelessWidget {
   const _NavItem({
     required this.icon,
@@ -248,7 +291,6 @@ class _NavItem extends StatelessWidget {
               icon,
               size: 22,
               color: color,
-              // Fill the icon when selected (Material Symbols weight variation)
               opticalSize: 24,
             ),
             const SizedBox(height: 4),
