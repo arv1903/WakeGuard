@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'services/auth_service.dart';
 import 'services/connection_service.dart';
 import 'services/local_backend.dart';
 import 'services/monitoring_client.dart';
@@ -31,6 +32,7 @@ class DriverMonitorApp extends StatefulWidget {
 class _DriverMonitorAppState extends State<DriverMonitorApp> {
   late final MonitoringClient client;
   late final ConnectionService connectionService;
+  late final AuthService authService;
   late final LocalBackendProcess backend;
   bool _ready = false;
 
@@ -39,12 +41,14 @@ class _DriverMonitorAppState extends State<DriverMonitorApp> {
     super.initState();
     client = MonitoringClient(baseUrl: widget.apiUrl);
     connectionService = ConnectionService(client: client);
+    authService = AuthService();
     backend = LocalBackendProcess();
     _init();
   }
 
   Future<void> _init() async {
-    // Load persisted connection state (backend URL + token).
+    // Load persisted auth and connection state.
+    await authService.load();
     await connectionService.load();
 
     if (widget.autoStartBackend) {
@@ -132,7 +136,10 @@ class _DriverMonitorAppState extends State<DriverMonitorApp> {
               builder: (context, constraints) {
                 final isMobile = constraints.maxWidth < AppBreakpoints.medium;
                 if (isMobile) {
-                  return MobileAppShell(connectionService: connectionService);
+                  return MobileAppShell(
+                    connectionService: connectionService,
+                    authService: authService,
+                  );
                 }
                 return AppShell(client: client);
               },

@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .monitoring import MonitoringSnapshot, MonitoringStore, SNAPSHOT_SCHEMA_VERSION
 from .pairing import PairingManager, PairingRateLimitedError
+from .db import verify_jwt, auth_register, auth_login, get_db, is_configured as supabase_configured
 
 
 API_PREFIX = "/api/v1"
@@ -66,13 +67,33 @@ class _RequestHandler(BaseHTTPRequestHandler):
         return token or None
 
     def _authorized(self) -> bool:
+        token = self._bearer_token()
+        # 1. No auth configured — allow everything
         expected = self.api.auth_token
         if not expected:
             return True
+        # 2. Legacy deployment token
+        if token == expected:
+            return True
+        # 3. Pairing companion token
+        if token is not None and self.api.pairing.is_valid_token(token):
+            return True
+        # 4. Supabase JWT
+        if token is not None and supabase_configured():
+            claims = verify_jwt(token)
+            if claims is not None:
+                return True
+        return False
+
+    def _jwt_user_id(self) -> str | None:
+        """Extract user_id from the Bearer JWT, or ``None``."""
         token = self._bearer_token()
-        return token == expected or (
-            token is not None and self.api.pairing.is_valid_token(token)
-        )
+        if not token:
+            return None
+        claims = verify_jwt(token)
+        if claims is None:
+            return None
+        return claims.get("sub")
 
     def _send_headers(self, status: int, content_type: str,
                       length: int | None = None, close: bool = True,
@@ -165,6 +186,9 @@ class _RequestHandler(BaseHTTPRequestHandler):
         if path == f"{API_PREFIX}/pairing":
             self._send_pairing()
             return
+        if path == f"{API_PREFIX}/device/discover":
+            self._handle_device_discover()
+            return
         if not self._authorized():
             self._error(401, "authorization required")
             return
@@ -217,6 +241,184 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._error(403, "pairing code is local-only")
             return
         self._send_json(200, self.api.pairing.details())
+
+    # ── Auth handlers ────────────────────────────────────────────────
+
+    def _handle_auth_register(self) -> None:
+        if not supabase_configured():
+            self._error(501, "Supabase is not configured")
+            return
+        payload = self._read_json()
+        if payload is None:
+            return
+        email = (payload.get("email") or "").strip()
+        password = (payload.get("password") or "").strip()
+        display_name = (payload.get("display_name") or "").strip()
+        if not email or not password:
+            self._error(400, "email and password are required")
+            return
+        result = auth_register(email, password, display_name)
+        if result is None:
+            self._error(400, "registration failed (email may already be in use)")
+            return
+        # Auto-login after registration
+        login_result = auth_login(email, password)
+        if login_result is not None:
+            self._send_json(200, login_result)
+        else:
+            self._send_json(200, {"user_id": result["id"], "email": result["email"]})
+
+    def _handle_auth_login(self) -> None:
+        if not supabase_configured():
+            self._error(501, "Supabase is not configured")
+            return
+        payload = self._read_json()
+        if payload is None:
+            return
+        email = (payload.get("email") or "").strip()
+        password = (payload.get("password") or "").strip()
+        if not email or not password:
+            self._error(400, "email and password are required")
+            return
+        result = auth_login(email, password)
+        if result is None:
+            self._error(401, "invalid email or password")
+            return
+        self._send_json(200, result)
+
+    def _handle_device_register(self) -> None:
+        user_id = self._jwt_user_id()
+        if user_id is None:
+            self._error(401, "valid JWT required")
+            return
+        db = get_db()
+        if db is None:
+            self._error(501, "Supabase is not configured")
+            return
+        payload = self._read_json()
+        if payload is None:
+            return
+        device_name = (payload.get("device_name") or "unknown").strip()
+        platform_name = (payload.get("platform") or "").strip()
+        api_host = (payload.get("api_host") or "127.0.0.1").strip()
+        api_port = int(payload.get("api_port") or 8765)
+        try:
+            resp = (
+                db.table("devices")
+                .insert({
+                    "user_id": user_id,
+                    "device_name": device_name,
+                    "platform": platform_name,
+                    "api_host": api_host,
+                    "api_port": api_port,
+                    "last_seen_at": "now()",
+                })
+                .execute()
+            )
+            device_id = resp.data[0]["id"] if resp.data else None
+            self._send_json(200, {"device_id": device_id})
+        except Exception as exc:
+            self._error(500, f"device registration failed: {exc}")
+
+    def _handle_device_heartbeat(self) -> None:
+        user_id = self._jwt_user_id()
+        if user_id is None:
+            self._error(401, "valid JWT required")
+            return
+        db = get_db()
+        if db is None:
+            self._error(501, "Supabase is not configured")
+            return
+        payload = self._read_json()
+        if payload is None:
+            return
+        device_id = payload.get("device_id")
+        if not device_id:
+            self._error(400, "device_id is required")
+            return
+        api_host = payload.get("api_host")
+        api_port = payload.get("api_port")
+        update: dict[str, Any] = {"last_seen_at": "now()"}
+        if api_host:
+            update["api_host"] = api_host
+        if api_port:
+            update["api_port"] = int(api_port)
+        try:
+            db.table("devices").update(update).eq("id", device_id).eq("user_id", user_id).execute()
+            self._send_json(200, {"ok": True})
+        except Exception as exc:
+            self._error(500, f"heartbeat failed: {exc}")
+
+    def _handle_device_discover(self) -> None:
+        user_id = self._jwt_user_id()
+        if user_id is None:
+            self._error(401, "valid JWT required")
+            return
+        db = get_db()
+        if db is None:
+            self._error(501, "Supabase is not configured")
+            return
+        try:
+            resp = (
+                db.table("devices")
+                .select("id,device_name,platform,api_host,api_port,last_seen_at")
+                .eq("user_id", user_id)
+                .order("last_seen_at", desc=True)
+                .execute()
+            )
+            devices = resp.data or []
+            self._send_json(200, {"devices": devices})
+        except Exception as exc:
+            self._error(500, f"discover failed: {exc}")
+
+    def _handle_auth_pair(self) -> None:
+        """Generate a scoped access token for a mobile client to talk to a device."""
+        user_id = self._jwt_user_id()
+        if user_id is None:
+            self._error(401, "valid JWT required")
+            return
+        payload = self._read_json()
+        if payload is None:
+            return
+        device_id = payload.get("device_id")
+        if not device_id:
+            self._error(400, "device_id is required")
+            return
+        # Verify the device belongs to this user
+        db = get_db()
+        if db is None:
+            self._error(501, "Supabase is not configured")
+            return
+        try:
+            resp = (
+                db.table("devices")
+                .select("id,api_host,api_port")
+                .eq("id", device_id)
+                .eq("user_id", user_id)
+                .execute()
+            )
+            if not resp.data:
+                self._error(404, "device not found")
+                return
+            device = resp.data[0]
+            # Issue a companion token via the existing PairingManager
+            import secrets
+            import time
+            token = secrets.token_urlsafe(32)
+            expires_at = time.time() + 24 * 60 * 60  # 24 hours
+            self.api.pairing._tokens[token] = expires_at
+            self._send_json(200, {
+                "access_token": token,
+                "token_type": "Bearer",
+                "expires_at": expires_at,
+                "device": {
+                    "id": device["id"],
+                    "api_host": device["api_host"],
+                    "api_port": device["api_port"],
+                },
+            })
+        except Exception as exc:
+            self._error(500, f"pair failed: {exc}")
 
     def _send_summary(self) -> None:
         if self.api.summary_provider is None:
@@ -307,6 +509,23 @@ class _RequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802 - stdlib handler signature
         parsed = urlparse(self.path)
+        # ── Auth endpoints (no auth required) ───────────────────────
+        if parsed.path == f"{API_PREFIX}/auth/register":
+            self._handle_auth_register()
+            return
+        if parsed.path == f"{API_PREFIX}/auth/login":
+            self._handle_auth_login()
+            return
+        # ── Device endpoints (JWT required) ─────────────────────────
+        if parsed.path == f"{API_PREFIX}/device/register":
+            self._handle_device_register()
+            return
+        if parsed.path == f"{API_PREFIX}/device/heartbeat":
+            self._handle_device_heartbeat()
+            return
+        if parsed.path == f"{API_PREFIX}/auth/pair":
+            self._handle_auth_pair()
+            return
         if parsed.path == f"{API_PREFIX}/pairing/exchange":
             payload = self._read_json()
             if payload is None:

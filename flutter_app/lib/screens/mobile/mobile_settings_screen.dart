@@ -2,21 +2,23 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../services/auth_service.dart';
 import '../../services/connection_service.dart';
-import '../../services/monitoring_client.dart';
 import '../../theme.dart';
 
 /// Mobile settings screen matching the Stitch "Settings" mockup.
 ///
-/// Shows connection info, preference toggles, and Forget Device.
+/// Shows calibration, thresholds, toggles, account, and forget device.
 class MobileSettingsScreen extends StatefulWidget {
   const MobileSettingsScreen({
     super.key,
     required this.connectionService,
+    required this.authService,
     this.onForgetDevice,
   });
 
   final ConnectionService connectionService;
+  final AuthService authService;
   final VoidCallback? onForgetDevice;
 
   @override
@@ -24,9 +26,15 @@ class MobileSettingsScreen extends StatefulWidget {
 }
 
 class _MobileSettingsScreenState extends State<MobileSettingsScreen> {
-  bool _alertSounds = true;
-  bool _hapticFeedback = true;
+  bool _telegramEnabled = true;
+  bool _alarmEnabled = true;
+  bool _sessionLogging = false;
   bool _forgetting = false;
+
+  // Threshold values
+  double _attentionSensitivity = 85;
+  int _drowsyDetection = 2; // 0=Low, 1=Medium, 2=High
+  double _perclosTolerance = 12;
 
   @override
   void initState() {
@@ -76,9 +84,7 @@ class _MobileSettingsScreenState extends State<MobileSettingsScreen> {
     setState(() => _forgetting = true);
     try {
       await widget.connectionService.forgetDevice();
-      if (mounted) {
-        widget.onForgetDevice?.call();
-      }
+      if (mounted) widget.onForgetDevice?.call();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -92,299 +98,298 @@ class _MobileSettingsScreenState extends State<MobileSettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final cs = widget.connectionService;
-    final connected =
-        cs.client.connectionState == BackendConnectionState.connected;
-
     return Container(
       color: Stitch.background,
       child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 120),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── Connection section ──
-            _sectionHeader('Connection'),
-            const SizedBox(height: 8),
-            _buildConnectionCard(connected, cs),
-            const SizedBox(height: 24),
-
-            // ── Preferences section ──
-            _sectionHeader('Preferences'),
-            const SizedBox(height: 8),
-            _buildPreferencesCard(),
-            const SizedBox(height: 24),
-
-            // ── Device section ──
-            _sectionHeader('Device'),
-            const SizedBox(height: 8),
-            _buildForgetButton(),
-            const SizedBox(height: 12),
-            Center(
-              child: Text(
-                'Disconnecting will clear local telemetry caches\nand require re-pairing via standard protocols.',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontFamily: 'JetBrains Mono',
-                  color: Stitch.onSurfaceVariant.withValues(alpha: 0.8),
-                ),
-                textAlign: TextAlign.center,
+            // Page header
+            const Text(
+              'System Configuration',
+              style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.w600,
+                color: Stitch.onSurface,
+                letterSpacing: -0.5,
               ),
             ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: const BoxDecoration(
+                    color: Stitch.secondary,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'NODE ACTIVE // UPLINK SECURE',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontFamily: 'JetBrains Mono',
+                    fontWeight: FontWeight.w500,
+                    color: Stitch.onSurfaceVariant,
+                    letterSpacing: 1,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+
+            // Calibration section
+            _SectionHeader('CALIBRATION'),
+            const SizedBox(height: 12),
+            _buildCalibrationCard(),
+            const SizedBox(height: 24),
+
+            // Thresholds section
+            _SectionHeader('THRESHOLDS'),
+            const SizedBox(height: 12),
+            _buildThresholdsCard(),
+            const SizedBox(height: 24),
+
+            // Modules section
+            _SectionHeader('MODULES'),
+            const SizedBox(height: 12),
+            _buildModulesCard(),
+            const SizedBox(height: 24),
+
+            // Operator section
+            _SectionHeader('OPERATOR'),
+            const SizedBox(height: 12),
+            _buildAccountCard(),
+            const SizedBox(height: 24),
+
+            // Forget device
+            _buildForgetButton(),
           ],
         ),
       ),
     );
   }
 
-  Widget _sectionHeader(String label) {
-    return Text(
-      label.toUpperCase(),
-      style: const TextStyle(
-        fontSize: 11,
-        fontFamily: 'JetBrains Mono',
-        fontWeight: FontWeight.w500,
-        color: Stitch.primary,
-        letterSpacing: 2,
-      ),
-    );
-  }
-
-  Widget _buildConnectionCard(bool connected, ConnectionService cs) {
+  Widget _buildCalibrationCard() {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: Stitch.container,
+        color: Stitch.surfaceLow,
         borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.3),
-            blurRadius: 16,
-          ),
-        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Status + ping
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Stitch.secondary.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Animated ping dot
-                    SizedBox(
-                      width: 10,
-                      height: 10,
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          if (connected)
-                            Container(
-                              width: 10,
-                              height: 10,
-                              decoration: BoxDecoration(
-                                color: Stitch.secondary.withValues(alpha: 0.5),
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                          Container(
-                            width: 8,
-                            height: 8,
-                            decoration: BoxDecoration(
-                              color: connected
-                                  ? Stitch.secondary
-                                  : Stitch.onSurfaceVariant,
-                              shape: BoxShape.circle,
-                              boxShadow: connected
-                                  ? [
-                                      BoxShadow(
-                                        color: Stitch.secondary
-                                            .withValues(alpha: 0.6),
-                                        blurRadius: 6,
-                                      ),
-                                    ]
-                                  : null,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      connected ? 'NODE ACTIVE' : 'OFFLINE',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontFamily: 'JetBrains Mono',
-                        fontWeight: FontWeight.w500,
-                        color: connected
-                            ? Stitch.secondary
-                            : Stitch.onSurfaceVariant,
-                        letterSpacing: 1.5,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Row(
-                children: [
-                  Icon(Icons.signal_cellular_alt,
-                      size: 14, color: Stitch.onSurfaceVariant),
-                  const SizedBox(width: 4),
-                  Text(
-                    connected ? '32ms' : '—',
-                    style: const TextStyle(
-                      fontSize: 11,
-                      fontFamily: 'JetBrains Mono',
-                      fontWeight: FontWeight.w500,
-                      color: Stitch.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-
-          // Backend address
-          const Text(
-            'Backend Address',
+          Text(
+            'Current Profile',
             style: TextStyle(
-              fontSize: 11,
+              fontSize: 14,
               fontFamily: 'JetBrains Mono',
               fontWeight: FontWeight.w500,
               color: Stitch.onSurfaceVariant,
             ),
           ),
-          const SizedBox(height: 6),
-          Container(
-            width: double.infinity,
-            padding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            decoration: BoxDecoration(
-              color: Stitch.containerHighest.withValues(alpha: 0.5),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Flexible(
-                  child: Text(
-                    cs.backendUrl ?? '—',
-                    style: const TextStyle(
-                      fontSize: 13,
-                      fontFamily: 'JetBrains Mono',
-                      fontWeight: FontWeight.w500,
-                      color: Stitch.onSurface,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                GestureDetector(
-                  onTap: () {
-                    if (cs.backendUrl != null) {
-                      // Copy to clipboard
-                    }
-                  },
-                  child: const Icon(Icons.content_copy,
-                      size: 18, color: Stitch.primary),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-
-          // Token expiry
+          const SizedBox(height: 8),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Session Token Expiry',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontFamily: 'JetBrains Mono',
-                      fontWeight: FontWeight.w500,
-                      color: Stitch.onSurfaceVariant,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    cs.tokenExpiryFormatted,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontFamily: 'JetBrains Mono',
-                      fontWeight: FontWeight.w500,
-                      color: Stitch.primaryFixedDim,
-                    ),
-                  ),
-                ],
-              ),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                  color: Stitch.surfaceBright,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Text(
-                  'REFRESH',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontFamily: 'JetBrains Mono',
-                    fontWeight: FontWeight.w500,
-                    letterSpacing: 1,
-                    color: Stitch.onSurface,
-                  ),
+              const Text(
+                'Standard Night Drive',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontFamily: 'JetBrains Mono',
+                  fontWeight: FontWeight.w600,
+                  color: Stitch.onSurface,
                 ),
               ),
+              const Icon(Icons.check_circle, color: Stitch.secondary, size: 20),
             ],
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: Material(
+              color: Stitch.containerHigh,
+              borderRadius: BorderRadius.circular(8),
+              child: InkWell(
+                onTap: () {},
+                borderRadius: BorderRadius.circular(8),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.tune, size: 18, color: Stitch.primary),
+                      SizedBox(width: 8),
+                      Text(
+                        'INITIATE RECALIBRATION',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontFamily: 'JetBrains Mono',
+                          fontWeight: FontWeight.w700,
+                          color: Stitch.primary,
+                          letterSpacing: 1.5,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildPreferencesCard() {
+  Widget _buildThresholdsCard() {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(4),
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: Stitch.container,
+        color: Stitch.surfaceLow,
         borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.3),
-            blurRadius: 16,
-          ),
-        ],
       ),
       child: Column(
         children: [
-          _ToggleRow(
-            icon: Icons.volume_up,
-            title: 'Alert Sounds',
-            subtitle: 'Audio warnings for critical events',
-            value: _alertSounds,
-            onChanged: (v) => setState(() => _alertSounds = v),
+          _ThresholdSlider(
+            label: 'Attention Sensitivity',
+            value: '${_attentionSensitivity.round()}%',
+            color: Stitch.primary,
+            sliderValue: _attentionSensitivity / 100,
+            activeColor: Stitch.primary,
+            onChanged: (v) => setState(() => _attentionSensitivity = v * 100),
           ),
-          _ToggleRow(
-            icon: Icons.vibration,
-            title: 'Haptic Feedback',
-            subtitle: 'Physical vibration alerts',
-            value: _hapticFeedback,
-            onChanged: (v) => setState(() => _hapticFeedback = v),
+          const SizedBox(height: 20),
+          _ThresholdSlider(
+            label: 'Drowsy Detection',
+            value: ['Low', 'Medium', 'High'][_drowsyDetection],
+            color: Stitch.tertiaryFixedDim,
+            sliderValue: _drowsyDetection / 2,
+            activeColor: Stitch.tertiaryFixedDim,
+            onChanged: (v) => setState(() => _drowsyDetection = (v * 2).round()),
+          ),
+          const SizedBox(height: 20),
+          _ThresholdSlider(
+            label: 'PERCLOS Tolerance',
+            value: '${_perclosTolerance.round()}%',
+            color: Stitch.secondary,
+            sliderValue: _perclosTolerance / 30,
+            activeColor: Stitch.secondary,
+            onChanged: (v) => setState(() => _perclosTolerance = v * 30),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildModulesCard() {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: Stitch.surfaceLow,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        children: [
+          _ModuleToggle(
+            icon: Icons.send,
+            title: 'Telegram Notifications',
+            value: _telegramEnabled,
+            onChanged: (v) => setState(() => _telegramEnabled = v),
+          ),
+          _Divider(),
+          _ModuleToggle(
+            icon: Icons.volume_up,
+            title: 'Alarm Sound',
+            value: _alarmEnabled,
+            onChanged: (v) => setState(() => _alarmEnabled = v),
+          ),
+          _Divider(),
+          _ModuleToggle(
+            icon: Icons.data_saver_on,
+            title: 'Session Logging',
+            value: _sessionLogging,
+            onChanged: (v) => setState(() => _sessionLogging = v),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAccountCard() {
+    final email = widget.authService.email ?? 'user@example.com';
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Stitch.surfaceLow,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: const BoxDecoration(
+              color: Stitch.containerHighest,
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.person, color: Stitch.onSurfaceVariant, size: 20),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  email,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontFamily: 'JetBrains Mono',
+                    fontWeight: FontWeight.w500,
+                    color: Stitch.onSurface,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 2),
+                const Text(
+                  'AUTHENTICATED',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontFamily: 'JetBrains Mono',
+                    fontWeight: FontWeight.w700,
+                    color: Stitch.secondary,
+                    letterSpacing: 1.5,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Material(
+            color: Stitch.containerHighest,
+            borderRadius: BorderRadius.circular(8),
+            child: InkWell(
+              onTap: () {},
+              borderRadius: BorderRadius.circular(8),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: const Text(
+                  'LOGOUT',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontFamily: 'JetBrains Mono',
+                    fontWeight: FontWeight.w700,
+                    color: Stitch.onSurface,
+                    letterSpacing: 1,
+                  ),
+                ),
+              ),
+            ),
           ),
         ],
       ),
@@ -392,129 +397,38 @@ class _MobileSettingsScreenState extends State<MobileSettingsScreen> {
   }
 
   Widget _buildForgetButton() {
-    return GestureDetector(
-      onTap: _forgetting ? null : _forgetDevice,
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 14),
-        decoration: BoxDecoration(
-          color: Stitch.errorContainer.withValues(alpha: 0.1),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: Stitch.error.withValues(alpha: 0.8),
-            width: 1.5,
-          ),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            _forgetting
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Stitch.error,
-                    ),
-                  )
-                : const Icon(Icons.delete_forever, color: Stitch.error),
-            const SizedBox(width: 8),
-            const Text(
-              'FORGET THIS DEVICE',
-              style: TextStyle(
-                fontSize: 13,
-                fontFamily: 'JetBrains Mono',
-                fontWeight: FontWeight.w500,
-                color: Stitch.error,
-                letterSpacing: 1.5,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ─── Toggle Row ──────────────────────────────────────────────────────────────
-
-class _ToggleRow extends StatelessWidget {
-  const _ToggleRow({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.value,
-    required this.onChanged,
-  });
-
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final bool value;
-  final ValueChanged<bool> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+    return SizedBox(
+      width: double.infinity,
       child: Material(
-        color: Stitch.containerHigh.withValues(alpha: 0.5),
-        borderRadius: BorderRadius.circular(10),
+        color: Stitch.error.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(12),
         child: InkWell(
-          onTap: () => onChanged(!value),
-          borderRadius: BorderRadius.circular(10),
-          child: Padding(
-            padding: const EdgeInsets.all(14),
+          onTap: _forgetting ? null : _forgetDevice,
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 16),
             child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Icon circle
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: const BoxDecoration(
-                    color: Stitch.containerHighest,
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(icon, size: 20, color: Stitch.onSurfaceVariant),
-                ),
-                const SizedBox(width: 14),
-                // Text
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                          color: Stitch.onSurface,
+                _forgetting
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Stitch.error,
                         ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        subtitle,
-                        style: const TextStyle(
-                          fontSize: 11,
-                          fontFamily: 'JetBrains Mono',
-                          fontWeight: FontWeight.w500,
-                          color: Stitch.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                // Toggle
-                SizedBox(
-                  width: 48,
-                  height: 26,
-                  child: Switch(
-                    value: value,
-                    onChanged: onChanged,
-                    activeThumbColor: Stitch.primary,
-                    activeTrackColor: Stitch.primary.withValues(alpha: 0.2),
-                    inactiveThumbColor: Stitch.outline,
-                    inactiveTrackColor: Stitch.surfaceLowest,
+                      )
+                    : const Icon(Icons.delete_forever, size: 18, color: Stitch.error),
+                const SizedBox(width: 8),
+                const Text(
+                  'FORGET DEVICE',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontFamily: 'JetBrains Mono',
+                    fontWeight: FontWeight.w700,
+                    color: Stitch.error,
+                    letterSpacing: 1.5,
                   ),
                 ),
               ],
@@ -522,6 +436,181 @@ class _ToggleRow extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+// ─── Section Header ─────────────────────────────────────────────────────────
+
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader(this.label);
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      label,
+      style: const TextStyle(
+        fontSize: 12,
+        fontFamily: 'JetBrains Mono',
+        fontWeight: FontWeight.w700,
+        color: Stitch.primary,
+        letterSpacing: 2,
+      ),
+    );
+  }
+}
+
+// ─── Threshold Slider ───────────────────────────────────────────────────────
+
+class _ThresholdSlider extends StatelessWidget {
+  const _ThresholdSlider({
+    required this.label,
+    required this.value,
+    required this.color,
+    required this.sliderValue,
+    required this.activeColor,
+    required this.onChanged,
+  });
+
+  final String label;
+  final String value;
+  final Color color;
+  final double sliderValue;
+  final Color activeColor;
+  final ValueChanged<double> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 14,
+                fontFamily: 'JetBrains Mono',
+                fontWeight: FontWeight.w500,
+                color: Stitch.onSurface,
+              ),
+            ),
+            Text(
+              value,
+              style: TextStyle(
+                fontSize: 14,
+                fontFamily: 'JetBrains Mono',
+                fontWeight: FontWeight.w500,
+                color: color,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        SliderTheme(
+          data: SliderThemeData(
+            activeTrackColor: activeColor,
+            inactiveTrackColor: Stitch.containerHighest,
+            thumbColor: activeColor,
+            overlayColor: activeColor.withValues(alpha: 0.1),
+            trackHeight: 8,
+            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
+          ),
+          child: Slider(
+            value: sliderValue.clamp(0.0, 1.0),
+            onChanged: onChanged,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ─── Module Toggle ──────────────────────────────────────────────────────────
+
+class _ModuleToggle extends StatelessWidget {
+  const _ModuleToggle({
+    required this.icon,
+    required this.title,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final IconData icon;
+  final String title;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => onChanged(!value),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          child: Row(
+            children: [
+              Icon(icon, size: 20, color: Stitch.onSurfaceVariant),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontFamily: 'JetBrains Mono',
+                    fontWeight: FontWeight.w500,
+                    color: Stitch.onSurface,
+                  ),
+                ),
+              ),
+              // Custom toggle
+              Container(
+                width: 48,
+                height: 24,
+                decoration: BoxDecoration(
+                  color: value ? Stitch.primary : Stitch.containerHighest,
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x40000000),
+                      offset: Offset(0, 2),
+                      blurRadius: 4,
+                    ),
+                  ],
+                ),
+                child: AnimatedAlign(
+                  duration: const Duration(milliseconds: 200),
+                  alignment: value ? Alignment.centerRight : Alignment.centerLeft,
+                  child: Container(
+                    width: 18,
+                    height: 18,
+                    margin: const EdgeInsets.symmetric(horizontal: 3),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: value ? Stitch.onPrimary : Stitch.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Divider ────────────────────────────────────────────────────────────────
+
+class _Divider extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 1,
+      color: Stitch.containerHighest,
     );
   }
 }

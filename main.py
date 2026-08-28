@@ -57,6 +57,8 @@ from yolo.monitoring import (GetAlertSeverity, MonitoringSnapshot,
 from yolo.api import CommandConflictError, MonitoringApi
 from yolo.config import LoadSettings
 import yolo.config as _config
+from yolo.db import get_db, WriteQueue, is_configured as supabase_configured
+from yolo.db_sync import JsonlTailReader
 
 # Names bound by value from yolo.config above; refreshed after LoadSettings
 # so --config overrides actually reach the app logic.
@@ -215,6 +217,13 @@ def main():
     face_lost_progress = 0.0
 
     FramePeriod = 1.0 / DisplayFps
+    # ── Supabase (optional) ─────────────────────────────────────────
+    _db = get_db()
+    _db_sync: JsonlTailReader | None = None
+    if _db is not None:
+        _db_sync = JsonlTailReader(_db, args.log)
+        _db_sync.start()
+        print("[db] Supabase connected — session data will be synced to the database")
     logger = SessionLogger(args.log)
     prev_alert = None
     last_log_time = time.monotonic()
@@ -267,15 +276,15 @@ def main():
 
     def current_summary():
         from yolo.summary import BuildSummary
-        return BuildSummary(args.log, session_id=session_id)
+        return BuildSummary(args.log, session_id=session_id, db_client=_db)
 
     def current_history():
         from yolo.summary import BuildSessionHistory
-        return BuildSessionHistory(args.log, limit=10)
+        return BuildSessionHistory(args.log, limit=10, db_client=_db)
 
     def current_telemetry(session_id: str):
         from yolo.summary import BuildSessionTelemetry
-        return BuildSessionTelemetry(args.log, session_id)
+        return BuildSessionTelemetry(args.log, session_id, db_client=_db)
 
     def current_session():
         return {
@@ -312,6 +321,28 @@ def main():
         )
         monitoring_api.start()
         print(f"Monitoring API listening on {args.api_host}:{monitoring_api.port}")
+
+        # ── Device auto-registration (Supabase only) ────────────────
+        _device_id: str | None = None
+        _device_jwt: str | None = None
+        _device_info_path = os.path.join(os.path.dirname(ProfilePath) or "profiles", "device.json")
+        if _db is not None:
+            try:
+                # Load cached device info if available
+                if os.path.exists(_device_info_path):
+                    with open(_device_info_path, "r") as _df:
+                        _device_cache = json.load(_df)
+                        _device_id = _device_cache.get("device_id")
+                        _device_jwt = _device_cache.get("jwt")
+                # If no cached JWT, the device must be registered manually
+                # via the API (user registers on desktop UI first time).
+                # For now, just print a reminder.
+                if not _device_jwt:
+                    print("[db] Supabase is active — register this device via /api/v1/auth/login "
+                          "then POST /api/v1/device/register to enable mobile discovery.")
+            except Exception as _exc:
+                print(f"[db] device info load failed: {_exc}")
+
         # Publish an initial idle snapshot so SSE clients get an immediate
         # response instead of blocking for 25 s on the first connect.
         snapshot_sequence += 1
@@ -330,6 +361,40 @@ def main():
             calibration_error=calibration_status["error"],
             calibration_valid_samples=calibration_status["valid_samples"],
         ))
+
+        # ── Device heartbeat thread (Supabase only) ─────────────────
+        _heartbeat_stop = threading.Event()
+
+        def _heartbeat_loop():
+            while not _heartbeat_stop.is_set():
+                _heartbeat_stop.wait(60.0)
+                if _heartbeat_stop.is_set():
+                    break
+                if _device_id and _device_jwt and _db is not None:
+                    try:
+                        import urllib.request
+                        req = urllib.request.Request(
+                            f"http://{args.api_host}:{monitoring_api.port}{API_PREFIX}/device/heartbeat",
+                            data=json.dumps({
+                                "device_id": _device_id,
+                                "api_host": args.api_host,
+                                "api_port": monitoring_api.port,
+                            }).encode(),
+                            headers={
+                                "Content-Type": "application/json",
+                                "Authorization": f"Bearer {_device_jwt}",
+                            },
+                            method="POST",
+                        )
+                        urllib.request.urlopen(req, timeout=5)
+                    except Exception:
+                        pass  # heartbeat is best-effort
+
+        if _device_id and _device_jwt:
+            _heartbeat_thread = threading.Thread(
+                target=_heartbeat_loop, name="device-heartbeat", daemon=True
+            )
+            _heartbeat_thread.start()
 
     if not args.headless:
         cv2.namedWindow("Drowsiness Detection", cv2.WINDOW_NORMAL)
@@ -356,6 +421,8 @@ def main():
                         session_id = uuid.uuid4().hex
                         trip_started_at = time.time()
                         logger.session_start(session_id)
+                        if _db_sync is not None:
+                            _db_sync.bind_session(session_id)
                         _start_pipeline()
                         blinks.reset()
                         # Run calibration on first session if needed (non-blocking)
@@ -371,6 +438,8 @@ def main():
                 elif command == "stop_trip":
                     if trip_active:
                         logger.session_stop(session_id)
+                        if _db_sync is not None:
+                            _db_sync.unbind_session()
                     trip_active = False
                     _stop_pipeline()
                     blinks.reset()
@@ -761,7 +830,11 @@ def main():
         _stop_pipeline()
         if monitoring_api is not None:
             monitoring_api.stop()
+        if "_heartbeat_stop" in dir():
+            _heartbeat_stop.set()
         logger.close()
+        if _db_sync is not None:
+            _db_sync.stop()
         if recorder is not None:
             recorder.release()
         telegram.StopTelegramWorker()
