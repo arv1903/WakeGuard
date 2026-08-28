@@ -63,7 +63,45 @@ def _build_summary_from_file(log_path: str, session_id: str | None = None) -> di
 
 
 def _build_summary_from_db(db: Any, session_id: str) -> dict:
-    """Build summary by querying Supabase telemetry + alert_events tables."""
+    """Build summary from Supabase. Prefers pre-computed stats in sessions
+    table; falls back to telemetry + alert_events queries."""
+    # Try pre-computed stats first (written by JsonlTailReader on session stop)
+    try:
+        sess_resp = (
+            db.table("sessions")
+            .select("duration_s,avg_attention,avg_perclos,alert_count,safety_score,alerts_by_type")
+            .eq("id", session_id)
+            .execute()
+        )
+        sess = (sess_resp.data or [{}])[0]
+        if sess.get("duration_s") is not None:
+            alerts_by_type = {}
+            raw = sess.get("alerts_by_type")
+            if isinstance(raw, str):
+                try:
+                    import json as _json
+                    alerts_by_type = _json.loads(raw)
+                except Exception:
+                    pass
+            elif isinstance(raw, dict):
+                alerts_by_type = raw
+            return {
+                "duration": sess.get("duration_s") or 0.0,
+                "trip_duration_s": sess.get("duration_s") or 0.0,
+                "attention_min": None,
+                "attention_avg": sess.get("avg_attention"),
+                "avg_attention": sess.get("avg_attention") or 0.0,
+                "perclos_max": sess.get("avg_perclos"),
+                "max_perclos": sess.get("avg_perclos") or 0.0,
+                "alert_count": sess.get("alert_count") or 0,
+                "avg_blinks_per_min": 0.0,
+                "alerts_by_type": alerts_by_type,
+                "alert_times": [],
+            }
+    except Exception:
+        pass
+
+    # Fallback: compute from raw telemetry + alert_events
     try:
         tele_resp = (
             db.table("telemetry")

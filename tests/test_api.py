@@ -319,7 +319,7 @@ def test_settings_command_route(api):
 
 def test_session_history_endpoint(api):
     service, _ = api
-    service.history_provider = lambda: [{"session_id": "s1", "safety_score": 95, "duration_s": 120.0}]
+    service.history_provider = lambda **kw: [{"session_id": "s1", "safety_score": 95, "duration_s": 120.0}]
     base = f"http://127.0.0.1:{service.port}"
     status, _, body = _get(base, "/api/v1/sessions/history")
     assert status == 200

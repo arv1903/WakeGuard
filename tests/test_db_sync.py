@@ -224,3 +224,31 @@ class TestJsonlTailReader:
 
         result3 = JsonlTailReader._iso_ts(None)
         assert "T" in result3  # current time
+    def test_session_stats_computed_on_stop(self, tmp_path):
+        log_path = tmp_path / 'test.jsonl'
+        with open(log_path, 'w') as f:
+            pass
+        db = _MockDB()
+        reader = JsonlTailReader(db, str(log_path), flush_interval=0.1)
+        reader.start()
+        reader.bind_session('s1')
+        time.sleep(0.15)
+        with open(log_path, 'a') as f:
+            f.write(json.dumps({'type': 'session_start', 'session_id': 's1', 'ts': 100.0}) + chr(10))
+            for i in range(5):
+                f.write(json.dumps({'type': 'frame', 'session_id': 's1', 'ts': 100.0 + i, 'attention': 80.0 + i, 'perclos': 0.1 + i * 0.02, 'ema_drowsy': 0.2, 'pitch': 0, 'yaw': 0, 'roll': 0, 'pose_valid': True, 'alert': None, 'blinks_per_min': 15.0}) + chr(10))
+            f.write(json.dumps({'type': 'alert', 'session_id': 's1', 'ts': 103.0, 'alert': 'MICROSLEEP', 'fired_for': 3.0}) + chr(10))
+            f.write(json.dumps({'type': 'session_stop', 'session_id': 's1', 'ts': 105.0}) + chr(10))
+        time.sleep(0.5)
+        reader.stop()
+        sessions = db.tables.get('sessions')
+        assert sessions is not None
+        assert len(sessions.updates) >= 1
+        update_data = sessions.updates[0][0]
+        assert 'duration_s' in update_data
+        assert 'avg_attention' in update_data
+        assert 'alert_count' in update_data
+        assert 'safety_score' in update_data
+        assert update_data['duration_s'] == 5.0
+        assert update_data['alert_count'] == 1
+        assert update_data['avg_attention'] == 82.0

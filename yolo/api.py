@@ -438,8 +438,9 @@ class _RequestHandler(BaseHTTPRequestHandler):
         if self.api.history_provider is None:
             self._send_json(200, {"history": []})
             return
+        user_id = self._jwt_user_id()
         try:
-            history = self.api.history_provider()
+            history = self.api.history_provider(user_id=user_id)
         except Exception:
             self._send_json(200, {"history": []})
             return

@@ -213,6 +213,27 @@ def auth_login(email: str, password: str) -> dict[str, Any] | None:
         return None
 
 
+def auth_refresh(refresh_token: str) -> dict[str, Any] | None:
+    """Refresh a session using a refresh token.
+
+    Returns {"access_token": ..., "refresh_token": ..., "expires_at": ...}
+    on success or None on failure.
+    """
+    db = get_db()
+    if db is None:
+        return None
+    try:
+        result = db.auth.refresh_session(refresh_token)
+        return {
+            "access_token": result.session.access_token,
+            "refresh_token": result.session.refresh_token,
+            "user_id": result.user.id,
+            "expires_at": result.session.expires_at,
+        }
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Offline write queue
 # ---------------------------------------------------------------------------
