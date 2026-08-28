@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'auth_service.dart';
 import 'monitoring_client.dart';
 
 /// Persistent connection state for the mobile companion.
@@ -10,7 +11,10 @@ import 'monitoring_client.dart';
 /// Wraps [MonitoringClient] and stores [backendUrl] / [bearerToken] in
 /// [SharedPreferences] so the user doesn't have to re-pair every launch.
 class ConnectionService extends ChangeNotifier {
-  ConnectionService({required this.client});
+  ConnectionService({required this.client, this.authService});
+
+  final AuthService? authService;
+  Timer? _refreshTimer;
 
   final MonitoringClient client;
 
@@ -124,6 +128,7 @@ class ConnectionService extends ChangeNotifier {
 
   /// Revoke the companion token and clear stored credentials.
   Future<void> forgetDevice() async {
+    _refreshTimer?.cancel();
     final oldToken = _bearerToken;
     _bearerToken = null;
     _tokenExpiresAt = null;
@@ -160,6 +165,29 @@ class ConnectionService extends ChangeNotifier {
       baseUrl: _backendUrl ?? 'http://127.0.0.1:8765',
       token: _bearerToken,
     );
+    _scheduleRefresh();
+  }
+
+  void _scheduleRefresh() {
+    _refreshTimer?.cancel();
+    if (_tokenExpiresAt == null || _backendUrl == null) return;
+    final timeLeft = _tokenExpiresAt!.difference(DateTime.now());
+    // Refresh 5 minutes before expiry, but at least 30s from now
+    final refreshIn = timeLeft - const Duration(minutes: 5);
+    if (refreshIn.isNegative) return; // already expired
+    _refreshTimer = Timer(refreshIn, _attemptRefresh);
+  }
+
+  Future<void> _attemptRefresh() async {
+    if (authService == null || _backendUrl == null) return;
+    final success = await authService!.refreshToken(backendUrl: _backendUrl!);
+    if (success && authService!.jwt != null) {
+      _bearerToken = authService!.jwt;
+      // Re-read expiry from the new token (approximate: 1 hour from now)
+      _tokenExpiresAt = DateTime.now().add(const Duration(hours: 1));
+      await _save();
+      _applyToClient();
+    }
   }
 
   /// Format the remaining token lifetime as a human string like "14h 22m".

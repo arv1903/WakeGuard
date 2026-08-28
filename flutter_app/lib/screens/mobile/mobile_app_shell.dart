@@ -175,22 +175,33 @@ class _MobileAppShellState extends State<MobileAppShell> {
                 ),
               ),
               const SizedBox(width: 12),
-              Container(
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(
-                  color: Stitch.primary,
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: Stitch.outlineVariant,
-                    width: 1,
-                  ),
-                ),
-                child: Icon(
-                  Icons.person,
-                  size: 18,
-                  color: Stitch.onPrimary,
-                ),
+              Builder(
+                builder: (ctx) {
+                  final email = widget.authService.email ?? '';
+                  final initial = email.isNotEmpty ? email[0].toUpperCase() : '?';
+                  return Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: Stitch.primary,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: Stitch.outlineVariant,
+                        width: 1,
+                      ),
+                    ),
+                    child: Center(
+                      child: Text(
+                        initial,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: Stitch.onPrimary,
+                        ),
+                      ),
+                    ),
+                  );
+                },
               ),
             ],
           ),

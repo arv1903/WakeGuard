@@ -11,8 +11,10 @@ from __future__ import annotations
 import json
 import os
 import queue
+import sqlite3
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 try:
@@ -216,8 +218,8 @@ def auth_login(email: str, password: str) -> dict[str, Any] | None:
 def auth_refresh(refresh_token: str) -> dict[str, Any] | None:
     """Refresh a session using a refresh token.
 
-    Returns {"access_token": ..., "refresh_token": ..., "expires_at": ...}
-    on success or None on failure.
+    Returns ``{"access_token": ..., "refresh_token": ..., "expires_at": ...}``
+    on success or ``None`` on failure.
     """
     db = get_db()
     if db is None:
@@ -235,15 +237,15 @@ def auth_refresh(refresh_token: str) -> dict[str, Any] | None:
 
 
 # ---------------------------------------------------------------------------
-# Offline write queue
+# Offline write queue with SQLite persistence
 # ---------------------------------------------------------------------------
 
 class WriteQueue:
     """Buffer DB writes locally and flush them in the background.
 
     Designed for network outages: rows are kept in a thread-safe queue and
-    retried with exponential back-off.  The queue is flushed periodically
-    (default every 5 s) and on :meth:`stop`.
+    retried with exponential back-off.  Failed writes are persisted to a
+    local SQLite database so they survive process restarts.
     """
 
     def __init__(
@@ -252,6 +254,7 @@ class WriteQueue:
         flush_interval: float = 5.0,
         max_retries: int = 3,
         batch_size: int = 50,
+        sqlite_path: str | None = None,
     ):
         self._db = db
         self._flush_interval = flush_interval
@@ -262,7 +265,68 @@ class WriteQueue:
         self._running = threading.Event()
         self._thread: threading.Thread | None = None
 
-    # ── Lifecycle ──────────────────────────────────────────────────────
+        # SQLite persistence for offline resilience
+        self._sqlite_path = sqlite_path
+        self._sqlite_conn: sqlite3.Connection | None = None
+        if sqlite_path:
+            self._init_sqlite(sqlite_path)
+
+    def _init_sqlite(self, path: str) -> None:
+        """Create the pending_writes table if it doesn't exist."""
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        self._sqlite_conn = sqlite3.connect(path, check_same_thread=False)
+        self._sqlite_conn.execute(
+            "CREATE TABLE IF NOT EXISTS pending_writes ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  table_name TEXT NOT NULL,"
+            "  rows_json TEXT NOT NULL,"
+            "  created_at REAL NOT NULL"
+            ")"
+        )
+        self._sqlite_conn.commit()
+
+    def _persist_to_sqlite(self, table: str, rows: list[dict]) -> None:
+        """Write failed rows to SQLite for later retry."""
+        if self._sqlite_conn is None:
+            return
+        try:
+            self._sqlite_conn.execute(
+                "INSERT INTO pending_writes (table_name, rows_json, created_at)"
+                " VALUES (?, ?, ?)",
+                (table, json.dumps(rows), time.time()),
+            )
+            self._sqlite_conn.commit()
+        except Exception:
+            pass  # best-effort
+
+    def _drain_sqlite(self) -> dict[str, list[dict]]:
+        """Load and delete all pending rows from SQLite."""
+        if self._sqlite_conn is None:
+            return {}
+        batches: dict[str, list[dict]] = {}
+        try:
+            rows = self._sqlite_conn.execute(
+                "SELECT id, table_name, rows_json FROM pending_writes ORDER BY id"
+            ).fetchall()
+            ids: list[int] = []
+            for row_id, table_name, rows_json in rows:
+                try:
+                    parsed = json.loads(rows_json)
+                    batches.setdefault(table_name, []).extend(parsed)
+                    ids.append(row_id)
+                except Exception:
+                    ids.append(row_id)
+            if ids:
+                placeholders = ",".join("?" * len(ids))
+                self._sqlite_conn.execute(
+                    f"DELETE FROM pending_writes WHERE id IN ({placeholders})", ids
+                )
+                self._sqlite_conn.commit()
+        except Exception:
+            pass
+        return batches
+
+    # -- Lifecycle -----------------------------------------------------------
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -278,10 +342,22 @@ class WriteQueue:
         if self._thread is not None:
             self._thread.join(timeout=5.0)
             self._thread = None
-        # Final best-effort flush
+        # Final best-effort flush to DB
         self._flush_pending()
+        if self._sqlite_conn:
+            self._sqlite_conn.close()
+            self._sqlite_conn = None
 
-    # ── Enqueue ────────────────────────────────────────────────────────
+    def _persist_remaining(self) -> None:
+        """Persist all in-memory queue items to SQLite on shutdown."""
+        while not self._queue.empty():
+            try:
+                table, rows = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            self._persist_to_sqlite(table, rows)
+
+    # -- Enqueue -------------------------------------------------------------
 
     def enqueue(self, table: str, row: dict) -> None:
         """Queue a single row for insertion."""
@@ -292,7 +368,7 @@ class WriteQueue:
         if rows:
             self._queue.put((table, list(rows)))
 
-    # ── Internal ───────────────────────────────────────────────────────
+    # -- Internal ------------------------------------------------------------
 
     def _flush_loop(self) -> None:
         while self._running.is_set():
@@ -300,18 +376,29 @@ class WriteQueue:
             self._flush_pending()
 
     def _flush_pending(self) -> None:
-        """Drain the queue and attempt batch inserts."""
-        batches: dict[str, list[dict]] = {}
+        """Drain the queue and SQLite, then attempt batch inserts."""
+        # First, drain SQLite (old failed writes)
+        sqlite_batches = self._drain_sqlite()
+
+        # Then drain in-memory queue
+        mem_batches: dict[str, list[dict]] = {}
         count = 0
         while not self._queue.empty() and count < self._batch_size * 10:
             try:
                 table, rows = self._queue.get_nowait()
             except queue.Empty:
                 break
-            batches.setdefault(table, []).extend(rows)
+            mem_batches.setdefault(table, []).extend(rows)
             count += len(rows)
 
-        for table, rows in batches.items():
+        # Merge: SQLite rows first, then in-memory
+        all_batches: dict[str, list[dict]] = {}
+        for table, rows in sqlite_batches.items():
+            all_batches.setdefault(table, []).extend(rows)
+        for table, rows in mem_batches.items():
+            all_batches.setdefault(table, []).extend(rows)
+
+        for table, rows in all_batches.items():
             self._insert_with_retry(table, rows)
 
     def _insert_with_retry(self, table: str, rows: list[dict]) -> None:
@@ -326,5 +413,5 @@ class WriteQueue:
                 attempt += 1
                 time.sleep(delay)
                 delay = min(delay * 2, 30.0)
-        # Exhausted retries — re-queue for the next flush cycle
-        self._queue.put((table, rows))
+        # Exhausted retries — persist to SQLite
+        self._persist_to_sqlite(table, rows)
