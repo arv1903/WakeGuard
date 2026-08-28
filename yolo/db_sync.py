@@ -46,6 +46,13 @@ class JsonlTailReader:
         self._device_id: str | None = None
         self._user_id: str | None = None
 
+        # Running session stats (accumulated across flushes)
+        self._stats_started_at: float | None = None
+        self._stats_ended_at: float | None = None
+        self._stats_attentions: list[float] = []
+        self._stats_perclos: list[float] = []
+        self._stats_alert_names: list[str] = []
+
         # Pending rows per table
         self._pending: dict[str, list[dict]] = {}
         self._lock = threading.Lock()
@@ -192,6 +199,13 @@ class JsonlTailReader:
                     "alert": ev.get("alert"),
                     "blinks_per_min": ev.get("blinks_per_min"),
                 })
+                # Accumulate stats for session summary
+                att = ev.get("attention")
+                if att is not None:
+                    self._stats_attentions.append(float(att))
+                pc = ev.get("perclos")
+                if pc is not None:
+                    self._stats_perclos.append(float(pc))
             elif ev_type == "alert" and sid:
                 alert_rows.append({
                     "session_id": sid,
@@ -200,6 +214,9 @@ class JsonlTailReader:
                     "event_type": "alert",
                     "fired_for": ev.get("fired_for"),
                 })
+                alert_name = ev.get("alert", "")
+                if alert_name:
+                    self._stats_alert_names.append(alert_name)
             elif ev_type == "clear" and sid:
                 alert_rows.append({
                     "session_id": sid,
@@ -213,6 +230,9 @@ class JsonlTailReader:
             # Session start → insert into sessions table
             for ev in session_start_events:
                 sid = ev.get("session_id") or self._session_id
+                ts_val = ev.get("ts")
+                if ts_val is not None:
+                    self._stats_started_at = float(ts_val)
                 if sid:
                     self._pending.setdefault("sessions", []).append({
                         "id": sid,
@@ -224,8 +244,10 @@ class JsonlTailReader:
             # Session stop → update sessions table with summary stats
             for ev in session_stop_events:
                 sid = ev.get("session_id") or self._session_id
+                ts_val = ev.get("ts")
+                if ts_val is not None:
+                    self._stats_ended_at = float(ts_val)
                 if sid:
-                    # We'll do an upsert — the session row should already exist
                     self._pending.setdefault("sessions_stop", []).append({
                         "id": sid,
                         "ended_at": self._iso_ts(ev.get("ts")),
@@ -253,12 +275,11 @@ class JsonlTailReader:
                 continue
 
             if table == "sessions_stop":
-                # Update existing session rows with end time
+                stats = self._compute_session_stats()
                 for row in rows:
                     try:
-                        self._db.table("sessions").update(
-                            {"ended_at": row["ended_at"]}
-                        ).eq("id", row["id"]).execute()
+                        update_data = {"ended_at": row["ended_at"], **stats}
+                        self._db.table("sessions").update(update_data).eq("id", row["id"]).execute()
                         total += 1
                     except Exception as exc:
                         print(f"[db-sync] session stop update failed: {exc}")
@@ -276,7 +297,36 @@ class JsonlTailReader:
         if total > 0:
             print(f"[db-sync] flushed {total} row(s)")
 
-    # ── Helpers ────────────────────────────────────────────────────────
+    def _compute_session_stats(self) -> dict:
+        """Compute aggregate session statistics from accumulated data."""
+        from collections import Counter
+        from .score import compute_safety_score
+
+        attentions = self._stats_attentions
+        perclos_vals = self._stats_perclos
+
+        att_avg = (sum(attentions) / len(attentions)) if attentions else 0.0
+        att_min = min(attentions) if attentions else 0.0
+        p_max = max(perclos_vals) if perclos_vals else 0.0
+
+        duration = 0.0
+        if self._stats_started_at is not None and self._stats_ended_at is not None:
+            duration = max(0.0, self._stats_ended_at - self._stats_started_at)
+        elif attentions:
+            duration = float(len(attentions))
+
+        alert_count = len(self._stats_alert_names)
+        alerts_by_type = dict(Counter(self._stats_alert_names))
+        safety_score = compute_safety_score(att_avg, alert_count)
+
+        return {
+            "duration_s": round(duration, 2),
+            "avg_attention": round(att_avg, 2),
+            "avg_perclos": round(p_max, 4),
+            "alert_count": alert_count,
+            "safety_score": round(safety_score, 2),
+            "alerts_by_type": json.dumps(alerts_by_type),
+        }
 
     @staticmethod
     def _iso_ts(ts: Any) -> str:

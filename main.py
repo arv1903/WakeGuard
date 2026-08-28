@@ -220,6 +220,7 @@ def main():
     # ── Supabase (optional) ─────────────────────────────────────────
     _db = get_db()
     _db_sync: JsonlTailReader | None = None
+    _device_user_id: str | None = None
     if _db is not None:
         _db_sync = JsonlTailReader(_db, args.log)
         _db_sync.start()
@@ -278,9 +279,9 @@ def main():
         from yolo.summary import BuildSummary
         return BuildSummary(args.log, session_id=session_id, db_client=_db)
 
-    def current_history():
+    def current_history(user_id=None):
         from yolo.summary import BuildSessionHistory
-        return BuildSessionHistory(args.log, limit=10, db_client=_db)
+        return BuildSessionHistory(args.log, limit=10, db_client=_db, user_id=user_id)
 
     def current_telemetry(session_id: str):
         from yolo.summary import BuildSessionTelemetry
@@ -334,6 +335,14 @@ def main():
                         _device_cache = json.load(_df)
                         _device_id = _device_cache.get("device_id")
                         _device_jwt = _device_cache.get("jwt")
+                        # Extract user_id from cached JWT claims
+                        if _device_jwt:
+                            try:
+                                _claims = verify_jwt(_device_jwt)
+                                if _claims:
+                                    _device_user_id = _claims.get("sub")
+                            except Exception:
+                                pass
                 # If no cached JWT, the device must be registered manually
                 # via the API (user registers on desktop UI first time).
                 # For now, just print a reminder.
@@ -422,7 +431,7 @@ def main():
                         trip_started_at = time.time()
                         logger.session_start(session_id)
                         if _db_sync is not None:
-                            _db_sync.bind_session(session_id)
+                            _db_sync.bind_session(session_id, device_id=_device_id, user_id=_device_user_id)
                         _start_pipeline()
                         blinks.reset()
                         # Run calibration on first session if needed (non-blocking)

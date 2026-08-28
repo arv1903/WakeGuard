@@ -131,6 +131,34 @@ class AuthService extends ChangeNotifier {
     _applyToken(result, email);
   }
 
+  /// Attempt to refresh the JWT using the stored refresh token.
+  Future<bool> refreshToken({required String backendUrl}) async {
+    if (_refreshToken == null || _refreshToken!.isEmpty) return false;
+    try {
+      final body = utf8.encode(jsonEncode({'refresh_token': _refreshToken}));
+      final request = await HttpClient().postUrl(
+        Uri.parse('$backendUrl/api/v1/auth/refresh'),
+      );
+      request.headers.contentType = ContentType.json;
+      request.headers.contentLength = body.length;
+      request.add(body);
+      final response = await request.close();
+      final responseBody = await response.transform(utf8.decoder).join();
+      if (response.statusCode != 200) return false;
+      final result = jsonDecode(responseBody) as Map<String, dynamic>;
+      final token = result['access_token'] as String?;
+      if (token == null || token.isEmpty) return false;
+      _jwt = token;
+      _refreshToken = result['refresh_token'] as String? ?? _refreshToken;
+      _userId = result['user_id'] as String? ?? _userId;
+      await _save();
+      notifyListeners();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   void _applyToken(Map<String, dynamic> result, String email) {
     _jwt = result['access_token'] as String?;
     _refreshToken = result['refresh_token'] as String?;
