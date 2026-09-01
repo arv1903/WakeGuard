@@ -90,6 +90,12 @@ class _MobileAppShellState extends State<MobileAppShell> {
       );
     }
 
+    // If auth is done (logged in), go straight to the dashboard.
+    // Device pairing can be done later from Settings.
+    if (widget.authService.isLoggedIn) {
+      return _buildShell();
+    }
+
     if (!cs.isPaired || cs.isExpired) {
       return ConnectionSetupScreen(
         connectionService: cs,

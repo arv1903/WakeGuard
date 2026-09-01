@@ -96,25 +96,15 @@ class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
       }
 
       await widget.connectionService.connectTo(normalisedUrl);
-      await _discoverDevices(normalisedUrl);
-      setState(() { _isLoading = false; });
+      // Skip device discovery — proceed straight to the app.
+      setState(() { _devicesLoaded = true; });
     } catch (e) {
       setState(() {
-        _isLoading = false;
         _error = e.toString().replaceFirst('Exception: ', '');
+        _devicesLoaded = true; // Always allow the UI to proceed
       });
     }
-  }
-
-  Future<void> _discoverDevices(String backendUrl) async {
-    final jwt = widget.authService.jwt;
-    if (jwt == null) return;
-    try {
-      final devices = await _discoveryService.discoverDevices(backendUrl, jwt);
-      setState(() { _devices = devices; _devicesLoaded = true; });
-    } catch (e) {
-      setState(() { _devicesLoaded = true; });
-    }
+    if (mounted) setState(() { _isLoading = false; });
   }
 
   Future<void> _pairWithDevice(DeviceInfo device) async {
