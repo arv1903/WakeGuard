@@ -10,6 +10,7 @@ on the same store later.
 from __future__ import annotations
 
 from functools import partial
+from datetime import datetime, timezone
 import json
 import ipaddress
 import uuid
@@ -311,7 +312,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
                     "platform": platform_name,
                     "api_host": api_host,
                     "api_port": api_port,
-                    "last_seen_at": "now()",
+                    "last_seen_at": datetime.now(timezone.utc),
                 })
                 .execute()
             )
@@ -338,7 +339,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
             return
         api_host = payload.get("api_host")
         api_port = payload.get("api_port")
-        update: dict[str, Any] = {"last_seen_at": "now()"}
+        update: dict[str, Any] = {"last_seen_at": datetime.now(timezone.utc)}
         if api_host:
             update["api_host"] = api_host
         if api_port:

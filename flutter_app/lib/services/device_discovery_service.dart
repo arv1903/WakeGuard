@@ -53,6 +53,10 @@ class DeviceInfo {
 
 /// Discovers desktop devices and handles pairing for the Flutter companion.
 class DeviceDiscoveryService {
+  DeviceDiscoveryService() {
+    _http.connectionTimeout = const Duration(seconds: 5);
+  }
+
   final HttpClient _http = HttpClient();
 
   /// Fetch all devices registered to the current user.

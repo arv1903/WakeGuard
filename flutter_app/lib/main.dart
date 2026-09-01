@@ -47,20 +47,36 @@ class _DriverMonitorAppState extends State<DriverMonitorApp> {
   }
 
   Future<void> _init() async {
-    // Load persisted auth and connection state.
-    await authService.load();
-    await connectionService.load();
-
-    if (widget.autoStartBackend) {
-      await _startBackend();
-    } else {
-      // If we have stored credentials, reconnect; otherwise connect to default.
-      if (connectionService.isPaired && !connectionService.isExpired) {
-        await connectionService.reconnect();
-      } else {
-        client.connect();
+    // Safety net: even if _init hangs (e.g. SharedPreferences slow, backend
+    // unreachable), the UI must render within a few seconds so the user can
+    // reach the login screen.
+    Future.delayed(const Duration(seconds: 8), () {
+      if (mounted && !_ready) {
+        debugPrint('[WakeGuard] Init timed out – forcing UI render');
+        setState(() => _ready = true);
       }
+    });
+
+    try {
+      // Load persisted auth and connection state.
+      await authService.load();
+      await connectionService.load();
+
+      if (widget.autoStartBackend) {
+        await _startBackend();
+      } else {
+        // If we have stored credentials, reconnect; otherwise connect to default.
+        if (connectionService.isPaired && !connectionService.isExpired) {
+          await connectionService.reconnect();
+        } else {
+          client.connect();
+        }
+      }
+    } catch (e) {
+      debugPrint('[WakeGuard] Init failed: $e');
     }
+    // Always render the UI — timeout or error must not leave the user stuck
+    // on the spinner with no way to reach the login screen.
     if (mounted) setState(() => _ready = true);
   }
 
