@@ -17,6 +17,7 @@ Real-time driver monitoring system that fuses a **YOLO eye-state classifier** wi
 | **Attention scoring** | Weighted 0–100 score blending eye confidence, pitch, and yaw penalties with EMA smoothing |
 | **Alert hysteresis** | Latches hold alerts active through a configurable grace period, eliminating on/off flicker |
 | **Face-lost detection** | Escalates to a **FACE LOST** alert when the face vanishes (microsleep head-drop) instead of going silent |
+| **Startup 3-2-1 countdown** | Evaluation is held for `StartupCountdownSeconds` (3 s) after a session starts — lets the driver settle and the camera auto-exposure converge before any alert can fire, so a false **MICROSLEEP** can't appear instantly after pressing start |
 | **Multi-channel alert arbitration** | Six independent accumulator-based timers with a fixed priority chain |
 | **Telegram dispatch** | Background worker sends the **full camera frame** with a caption (alert type, ISO timestamp, geolocation) plus a `sendLocation` pin; bounded queue + cooldown |
 | **Session logging & trip summaries** | Thread-safe JSONL telemetry (1 Hz samples + alert transitions) with `--summary` reporting |
@@ -220,6 +221,49 @@ code guessing. A companion can revoke its own token with authenticated
 local credentials and requests that revocation. The original `--api-token`
 remains valid for administration and cannot be revoked through this endpoint.
 
+#### Zero-Touch Discovery (mobile)
+
+When bound to the LAN, the backend also answers a UDP discovery broadcast so
+the mobile app never needs a typed address:
+
+- Desktop: `python main.py --api --api-host 0.0.0.0 --api-token CHANGE_ME`
+  starts a discovery beacon on `udp/48765` automatically.
+- Phone: the setup screen broadcasts `WG-DISCOVER` to `udp/48765` on open and
+  lists every WakeGuard backend that answers — tap one, sign in, done.
+- The backend's IP is taken from the UDP reply's *source address*, never from
+  the payload, so a spoofed packet cannot redirect the client to itself.
+- Manual entry remains as a fallback: AP isolation, VPNs, and enterprise Wi-Fi
+  can block broadcasts. Allow inbound `udp/48765` once in the firewall
+  (rule names: `WakeGuard Discovery`, plus `WakeGuard API` on tcp/8765).
+
+#### QR Pairing (mobile, discovery-free)
+
+For networks where broadcast discovery is blocked, the desktop can display a
+pairing QR code instead:
+
+- Desktop: **Settings → Companion Devices → SHOW PAIRING QR**. The dialog
+  fetches the one-time code from `GET /api/v1/pairing`, renders it as a QR
+  (payload: `{"v":1,"code":...,"host":...,"port":...}`), shows a countdown
+  from `expires_at`, and auto-rotates when the window lapses.
+- Phone: **Scan QR Code** on the setup screen opens the in-app camera. The
+  scanned payload points the client at the desktop's LAN address and exchanges
+  the code via the unauthenticated `POST /api/v1/pairing/exchange` for a
+  24-hour scoped bearer token.
+- The code is single-use, rotates on every successful exchange, and failed
+  exchanges are rate-limited by the existing `PairingManager` lockout.
+
+#### Paired-Device Management (desktop admin)
+
+The desktop's **Companion Devices** card lists every live companion token:
+
+- `GET /api/v1/pairings` (deployment token only) returns
+  `{devices: [{token_preview, device_name, issued_at, expires_at}]}` — an
+  8-character preview, never the secret itself.
+- `POST /api/v1/pairings/revoke` with `{token_preview}` (deployment token
+  only) revokes that device; companion tokens get `403` on both endpoints.
+- The phone labels its pairing during `POST /api/v1/pairing/exchange` via the
+  optional `device_name` field.
+
 ### Flutter Dashboard
 
 The shared Flutter client lives in [`flutter_app/`](flutter_app/). It supports
@@ -282,6 +326,7 @@ python main.py --config settings.json
 | Attention | `AttentionFocusedMin`, `AttentionUnfocusedMin`, `AttentionSmoothAlpha` | 80, 50, 0.85 |
 | Hysteresis | `ClearGraceSeconds` | 2.0 s |
 | Pipeline | `CaptureWidth/Height`, `YoloEveryN`, `HeadPoseEveryN`, `DisplayFps` | 640×480, 1, 2, 30 |
+| Startup | `StartupCountdownSeconds` | 3.0 s (0 disables) |
 | Layout | `FrameWidth`, `FrameHeight`, `HudPanel` | 1280, 720, 275 px |
 | Misc | `PilHud`, `NightMode`, `SessionLogPath`, `ProfilePath`, `TelegramCooldown` | True, False, `logs/session.jsonl`, `profiles/driver.json`, 30 s |
 
