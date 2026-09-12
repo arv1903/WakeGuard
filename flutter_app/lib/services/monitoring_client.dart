@@ -101,6 +101,7 @@ class _SnapshotSmoother {
       calibrationProgress: raw.calibrationProgress,
       calibrationError: raw.calibrationError,
       calibrationValidSamples: raw.calibrationValidSamples,
+      startupCountdown: raw.startupCountdown,
     );
   }
 
@@ -444,6 +445,41 @@ class MonitoringClient extends ChangeNotifier {
     return result;
   }
 
+  /// Admin: list live companion tokens (desktop settings screen). Requires
+  /// the deployment token; the backend refuses companion tokens (403).
+  Future<List<PairingDevice>> listPairings() async {
+    final request = await _http.getUrl(Uri.parse('$_baseUrl/api/v1/pairings'));
+    _headers().forEach(request.headers.add);
+    final response = await request.close();
+    final body = await response.transform(utf8.decoder).join();
+    if (response.statusCode != HttpStatus.ok) {
+      throw HttpException('Pairing list returned ${response.statusCode}: $body');
+    }
+    final result = jsonDecode(body) as Map<String, dynamic>;
+    final devices = result['devices'] as List<dynamic>? ?? [];
+    return devices
+        .map((d) => PairingDevice.fromJson(d as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Admin: revoke a companion token by its preview. Returns false when the
+  /// backend reports no match (404).
+  Future<bool> revokePairing(String tokenPreview) async {
+    final request = await _http.postUrl(
+      Uri.parse('$_baseUrl/api/v1/pairings/revoke'),
+    );
+    request.headers.contentType = ContentType.json;
+    _headers().forEach(request.headers.add);
+    request.write(jsonEncode(<String, dynamic>{'token_preview': tokenPreview}));
+    final response = await request.close();
+    if (response.statusCode == HttpStatus.notFound) return false;
+    if (response.statusCode != HttpStatus.ok) {
+      final body = await response.transform(utf8.decoder).join();
+      throw HttpException('Revoke returned ${response.statusCode}: $body');
+    }
+    return true;
+  }
+
   Future<Map<String, dynamic>> fetchCurrentSummary() async {
     final request = await _http.getUrl(
       Uri.parse('$_baseUrl/api/v1/sessions/current/summary'),
@@ -547,4 +583,33 @@ class MonitoringClient extends ChangeNotifier {
     _http.close(force: true);
     super.dispose();
   }
+}
+
+/// One live companion token as shown in the desktop's pairing admin UI.
+/// Carries only a preview — the secret never leaves the backend.
+class PairingDevice {
+  PairingDevice({
+    required this.tokenPreview,
+    required this.deviceName,
+    required this.issuedAt,
+    required this.expiresAt,
+  });
+
+  factory PairingDevice.fromJson(Map<String, dynamic> json) => PairingDevice(
+        tokenPreview: json['token_preview'] as String? ?? '',
+        deviceName: (json['device_name'] as String?)?.trim().isEmpty == true
+            ? 'Unknown'
+            : (json['device_name'] as String?) ?? 'Unknown',
+        issuedAt: DateTime.fromMillisecondsSinceEpoch(
+            ((json['issued_at'] as num? ?? 0) * 1000).toInt()),
+        expiresAt: DateTime.fromMillisecondsSinceEpoch(
+            ((json['expires_at'] as num? ?? 0) * 1000).toInt()),
+      );
+
+  final String tokenPreview;
+  final String deviceName;
+  final DateTime issuedAt;
+  final DateTime expiresAt;
+
+  bool get isExpired => DateTime.now().isAfter(expiresAt);
 }
