@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'services/auth_service.dart';
+import 'services/backend_recovery_service.dart';
 import 'services/connection_service.dart';
 import 'services/local_backend.dart';
 import 'services/monitoring_client.dart';
@@ -34,6 +35,7 @@ class _DriverMonitorAppState extends State<DriverMonitorApp> {
   late final ConnectionService connectionService;
   late final AuthService authService;
   late final LocalBackendProcess backend;
+  BackendRecoveryService? _recovery;
   bool _ready = false;
 
   @override
@@ -61,6 +63,15 @@ class _DriverMonitorAppState extends State<DriverMonitorApp> {
       // Load persisted auth and connection state.
       await authService.load();
       await connectionService.load();
+
+      // Phones: auto-recover when the desktop moves (DHCP, restart, AP
+      // switch). Desktop hosts its own backend — nothing to recover there.
+      if (!LocalBackendProcess.supported) {
+        _recovery = BackendRecoveryService(
+          connectionService: connectionService,
+          shouldRun: () => authService.isLoggedIn,
+        )..start();
+      }
 
       if (widget.autoStartBackend) {
         await _startBackend();
@@ -93,6 +104,7 @@ class _DriverMonitorAppState extends State<DriverMonitorApp> {
 
   @override
   void dispose() {
+    _recovery?.stop();
     client.dispose();
     unawaited(backend.dispose());
     super.dispose();
