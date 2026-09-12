@@ -7,6 +7,7 @@ import hmac
 import secrets
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -18,6 +19,16 @@ class PairingRateLimitedError(ValueError):
         super().__init__(
             f"pairing temporarily locked; retry in {self.retry_after:.0f} seconds"
         )
+
+
+@dataclass
+class _TokenRecord:
+    """One issued companion token. The secret itself is never stored here —
+    the token string is the dict key; records carry only presentation data."""
+
+    device_name: str
+    issued_at: float
+    expires_at: float
 
 
 class PairingManager:
@@ -49,7 +60,7 @@ class PairingManager:
         self._code = ""
         self._code_digest = b""
         self._code_expires_at = 0.0
-        self._tokens: dict[str, float] = {}
+        self._tokens: dict[str, _TokenRecord] = {}
         self._failed_attempts: list[float] = []
         self._locked_until = 0.0
         self._rotate_code_locked(time.time())
@@ -83,7 +94,8 @@ class PairingManager:
                 "pairing_uri": f"driver-monitor://pair?code={self._code}",
             }
 
-    def exchange(self, code: Any, now: float | None = None) -> dict[str, Any]:
+    def exchange(self, code: Any, now: float | None = None,
+                 device_name: str = "") -> dict[str, Any]:
         now = time.time() if now is None else now
         if not isinstance(code, str):
             raise ValueError("pairing code is required")
@@ -105,7 +117,11 @@ class PairingManager:
 
             access_token = secrets.token_urlsafe(32)
             expires_at = now + self.token_ttl
-            self._tokens[access_token] = expires_at
+            self._tokens[access_token] = _TokenRecord(
+                device_name=(device_name or "").strip(),
+                issued_at=now,
+                expires_at=expires_at,
+            )
             self._failed_attempts.clear()
             self._locked_until = 0.0
             self._rotate_code_locked(now)
@@ -122,15 +138,72 @@ class PairingManager:
         with self._lock:
             return self._tokens.pop(token, None) is not None
 
+    def revoke_admin(self, token: Any, now: float | None = None) -> bool:
+        """Admin-side revocation of any companion token (master token auth)."""
+        if not isinstance(token, str) or not token:
+            return False
+        now = time.time() if now is None else now
+        with self._lock:
+            record = self._tokens.pop(token, None)
+            return record is not None
+
+    def revoke_by_preview(self, preview: Any, now: float | None = None) -> int:
+        """Revoke every companion token whose prefix matches `preview`.
+
+        Previews are the only handle the admin UI has (secrets are never
+        stored in listings), so resolution must happen here behind the lock.
+        Returns the number of tokens revoked.
+        """
+        if not isinstance(preview, str) or not preview:
+            return 0
+        now = time.time() if now is None else now
+        with self._lock:
+            matches = [t for t in self._tokens if t.startswith(preview)]
+            for token in matches:
+                del self._tokens[token]
+            return len(matches)
+
+    def register_token(self, token: str, expires_at: float,
+                       device_name: str = "", now: float | None = None) -> None:
+        """Register an externally-issued companion token (Supabase pairing path)."""
+        if not isinstance(token, str) or not token:
+            raise ValueError("token is required")
+        now = time.time() if now is None else now
+        with self._lock:
+            self._tokens[token] = _TokenRecord(
+                device_name=(device_name or "").strip(),
+                issued_at=now,
+                expires_at=float(expires_at),
+            )
+
+    def list_tokens(self, now: float | None = None) -> list[dict[str, Any]]:
+        """Admin listing of live companion tokens, secrets excluded."""
+        now = time.time() if now is None else now
+        with self._lock:
+            expired = [t for t, r in self._tokens.items() if now >= r.expires_at]
+            for token in expired:
+                del self._tokens[token]
+            return [
+                {
+                    "token_preview": token[:8],
+                    "device_name": record.device_name,
+                    "issued_at": record.issued_at,
+                    "expires_at": record.expires_at,
+                }
+                for token, record in sorted(
+                    self._tokens.items(), key=lambda item: item[1].issued_at
+                )
+            ]
+
     def is_valid_token(self, token: str, now: float | None = None) -> bool:
         now = time.time() if now is None else now
         if not isinstance(token, str) or not token:
             return False
         with self._lock:
-            expires_at = self._tokens.get(token)
-            if expires_at is None:
+            record = self._tokens.get(token)
+            if record is None:
                 return False
-            if now >= expires_at:
+            if now >= record.expires_at:
                 del self._tokens[token]
                 return False
             return True
