@@ -307,6 +307,7 @@ def main():
         }
 
     monitoring_api = None
+    _discovery = None
     if args.api:
         monitoring_api = MonitoringApi(
             host=args.api_host,
@@ -322,6 +323,21 @@ def main():
         )
         monitoring_api.start()
         print(f"Monitoring API listening on {args.api_host}:{monitoring_api.port}")
+
+        # ── LAN discovery beacon (phone auto-finds this backend) ────
+        if args.api_host not in ("127.0.0.1", "localhost", "::1"):
+            from yolo.discovery import DISCOVERY_PORT as _DPORT, DiscoveryResponder
+            try:
+                _discovery = DiscoveryResponder(
+                    api_host=args.api_host,
+                    api_port=monitoring_api.port,
+                    device_name=os.environ.get("DRIVER_DEVICE_NAME") or None,
+                )
+                _discovery.start()
+                print(f"Discovery beacon answering on udp/{_DPORT} "
+                      "(mobile app can now find this backend automatically)")
+            except OSError as exc:
+                print(f"[!] discovery beacon unavailable: {exc}")
 
         # ── Device auto-registration (Supabase only) ────────────────
         _device_id: str | None = None
@@ -839,6 +855,8 @@ def main():
         _stop_pipeline()
         if monitoring_api is not None:
             monitoring_api.stop()
+        if _discovery is not None:
+            _discovery.stop()
         if "_heartbeat_stop" in dir():
             _heartbeat_stop.set()
         logger.close()
