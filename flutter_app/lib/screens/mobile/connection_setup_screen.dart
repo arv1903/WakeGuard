@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../services/connection_service.dart';
 import '../../services/device_discovery_service.dart';
+import '../../services/discovery_client.dart';
 import '../../theme.dart';
 
 /// Full-screen connection setup matching the Stitch "Connection Setup" mockup.
@@ -16,10 +17,19 @@ class ConnectionSetupScreen extends StatefulWidget {
     super.key,
     required this.connectionService,
     required this.authService,
+    this.discoveryClient,
+    this.onScanQr,
   });
 
   final ConnectionService connectionService;
   final AuthService authService;
+
+  /// Injectable for tests; defaults to the real UDP prober.
+  final DiscoveryClient? discoveryClient;
+
+  /// Opens the QR scanner; injectable for tests. When null, the entry is
+  /// hidden (e.g. desktop layouts where scanning makes no sense).
+  final void Function(BuildContext context)? onScanQr;
 
   @override
   State<ConnectionSetupScreen> createState() => _ConnectionSetupScreenState();
@@ -40,6 +50,12 @@ class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
   List<DeviceInfo> _devices = [];
   bool _devicesLoaded = false;
 
+  // LAN auto-discovery state
+  static const _probeTimeout = Duration(milliseconds: 1200);
+  List<DiscoveredBackend> _backends = [];
+  bool _probing = true;
+  bool _hasProbed = false;
+
   final _discoveryService = DeviceDiscoveryService();
 
   late AnimationController _pulseCtrl;
@@ -52,6 +68,7 @@ class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
       duration: const Duration(seconds: 3),
     )..repeat();
     _backendUrlController.text = 'http://127.0.0.1:8765';
+    _startAutoDiscovery();
   }
 
   @override
@@ -107,6 +124,36 @@ class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
     if (mounted) setState(() { _isLoading = false; });
   }
 
+  // ── LAN auto-discovery ─────────────────────────────────────────────────
+
+  Future<void> _startAutoDiscovery() async {
+    setState(() { _probing = true; });
+    try {
+      final backends = await (widget.discoveryClient ?? DiscoveryClient())
+          .discover()
+          .timeout(_probeTimeout + const Duration(milliseconds: 800));
+      if (!mounted) return;
+      setState(() {
+        _backends = backends;
+        _probing = false;
+        _hasProbed = true;
+        // Nothing found → manual entry is the primary path now.
+        if (backends.isEmpty) _showManualEntry = true;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _probing = false;
+        _hasProbed = true;
+        _showManualEntry = true;
+      });
+    }
+  }
+
+  void _adopt(DiscoveredBackend backend) {
+    setState(() { _backendUrlController.text = backend.url; });
+  }
+
   Future<void> _pairWithDevice(DeviceInfo device) async {
     final jwt = widget.authService.jwt;
     if (jwt == null) return;
@@ -160,11 +207,15 @@ class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
 
               // Auth flow
               if (!widget.authService.isLoggedIn) ...[
-                _buildBackendUrlCard(),
+                _buildDiscoverySection(),
+                if (widget.onScanQr != null) ...[
+                  const SizedBox(height: 12),
+                  _buildScanQrEntry(),
+                ],
                 const SizedBox(height: 16),
                 _buildAuthCard(),
               ] else if (!_devicesLoaded) ...[
-                _buildBackendUrlCard(),
+                _buildDiscoverySection(),
                 const SizedBox(height: 16),
                 _buildDiscoveringCard(),
               ] else ...[
@@ -369,6 +420,221 @@ class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
                   ),
                 ),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── LAN Auto-Discovery ──────────────────────────────────────────────
+
+  /// Searching → found list → (nothing) manual fallback with a hint.
+  /// The manual URL card is always reachable via the toggle, even when a
+  /// backend was found (the detected address may be wrong on multi-homed PCs).
+  Widget _buildDiscoverySection() {
+    if (_probing && !_hasProbed) return _buildSearchingCard();
+    final found = _backends.isNotEmpty ? _buildFoundCard() : null;
+    if (found != null && !_showManualEntry) return found;
+    return Column(
+      children: [
+        if (found != null) ...[found, const SizedBox(height: 16)],
+        if (_backends.isEmpty) ...[
+          _buildNotFoundHint(),
+          const SizedBox(height: 16),
+        ],
+        _buildBackendUrlCard(),
+      ],
+    );
+  }
+
+  Widget _buildSearchingCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Stitch.container,
+        borderRadius: BorderRadius.circular(12),
+        border:
+            Border.all(color: Stitch.outlineVariant.withValues(alpha: 0.5)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const SizedBox(
+            width: 16,
+            height: 16,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: Stitch.secondary,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Text(
+            'SEARCHING FOR DESKTOP',
+            style: TextStyle(
+              fontSize: 12,
+              fontFamily: 'JetBrains Mono',
+              fontWeight: FontWeight.w500,
+              color: Stitch.onSurfaceVariant,
+              letterSpacing: 1.5,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFoundCard() {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: Stitch.container,
+        borderRadius: BorderRadius.circular(12),
+        border:
+            Border.all(color: Stitch.outlineVariant.withValues(alpha: 0.5)),
+      ),
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: const BoxDecoration(
+              border: Border(
+                bottom: BorderSide(color: Stitch.outlineVariant, width: 0.5),
+              ),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.radar, size: 16, color: Stitch.secondary),
+                const SizedBox(width: 8),
+                Text(
+                  'FOUND ON THIS WI-FI',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontFamily: 'JetBrains Mono',
+                    fontWeight: FontWeight.w700,
+                    color: Stitch.secondary,
+                    letterSpacing: 1.5,
+                  ),
+                ),
+                const Spacer(),
+                GestureDetector(
+                  onTap: _startAutoDiscovery,
+                  child: const Icon(Icons.refresh,
+                      size: 18, color: Stitch.secondary),
+                ),
+              ],
+            ),
+          ),
+          ..._backends.map(_buildBackendTile),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBackendTile(DiscoveredBackend backend) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => _adopt(backend),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: const BoxDecoration(
+            border: Border(
+              bottom: BorderSide(color: Stitch.outlineVariant, width: 0.5),
+            ),
+          ),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Stitch.primary.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(Icons.desktop_windows,
+                    size: 20, color: Stitch.primary),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      backend.deviceName,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                        color: Stitch.onSurface,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      backend.url,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontFamily: 'JetBrains Mono',
+                        color: Stitch.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right,
+                  size: 20, color: Stitch.onSurfaceVariant),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNotFoundHint() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Stitch.surfaceLowest,
+        borderRadius: BorderRadius.circular(12),
+        border:
+            Border.all(color: Stitch.outlineVariant.withValues(alpha: 0.5)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.wifi_off,
+              size: 16, color: Stitch.onSurfaceVariant.withValues(alpha: 0.7)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Desktop not found automatically. Make sure both devices are '
+              'on the same Wi-Fi and the desktop backend is running.',
+              style: TextStyle(
+                fontSize: 12,
+                color: Stitch.onSurfaceVariant.withValues(alpha: 0.8),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildScanQrEntry() {
+    return GestureDetector(
+      onTap: () => widget.onScanQr?.call(context),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.qr_code_scanner, size: 14, color: Stitch.secondary),
+          const SizedBox(width: 6),
+          Text(
+            'Scan QR Code',
+            style: TextStyle(
+              fontSize: 12,
+              fontFamily: 'JetBrains Mono',
+              fontWeight: FontWeight.w700,
+              color: Stitch.secondary,
+              letterSpacing: 1,
             ),
           ),
         ],
