@@ -67,6 +67,14 @@ class _RequestHandler(BaseHTTPRequestHandler):
         token = header[len(prefix):].strip()
         return token or None
 
+    def _is_admin(self) -> bool:
+        """Admin endpoints accept the deployment token only — companion
+        tokens authenticate but are never authorized to manage pairings."""
+        expected = self.api.auth_token
+        if not expected:
+            return True  # no auth configured (local-only deployment)
+        return self._bearer_token() == expected
+
     def _authorized(self) -> bool:
         token = self._bearer_token()
         # 1. No auth configured — allow everything
@@ -130,7 +138,32 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self._send_bytes(status, body, "application/json; charset=utf-8",
                          extra_headers=extra_headers)
 
+    def _drain_request_body(self) -> None:
+        # Only meaningful when the body was never consumed; see _read_json.
+        if getattr(self, "_body_consumed", False):
+            return
+        """Read and discard any unread request body.
+
+        Rejecting a POST before consuming its body makes Windows abort the
+        TCP stream with an RST when the socket closes, hiding the error
+        response from the client (ConnectionAbortedError / WinError 10053).
+        """
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return
+        remaining = max(0, min(length, _MAX_BODY_BYTES * 2))
+        try:
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 65536))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+        except OSError:
+            pass  # client vanished mid-request; the error response is moot
+
     def _error(self, status: int, message: str) -> None:
+        self._drain_request_body()
         self._send_json(status, {"error": message})
 
     def do_OPTIONS(self):  # noqa: N802 - stdlib handler signature
@@ -172,6 +205,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
             return None
         try:
             raw = self.rfile.read(length)
+            self._body_consumed = True
             data = json.loads(raw.decode("utf-8")) if raw else {}
         except (UnicodeDecodeError, json.JSONDecodeError):
             self._error(400, "request body must be valid JSON")
@@ -189,6 +223,9 @@ class _RequestHandler(BaseHTTPRequestHandler):
             return
         if path == f"{API_PREFIX}/device/discover":
             self._handle_device_discover()
+            return
+        if path == f"{API_PREFIX}/pairings":
+            self._handle_pairings_list()
             return
         if not self._authorized():
             self._error(401, "authorization required")
@@ -228,6 +265,33 @@ class _RequestHandler(BaseHTTPRequestHandler):
             return ip.is_loopback
         except ValueError:
             return False
+
+    def _require_admin(self) -> bool:
+        """Send the appropriate error and return False when not admin."""
+        if self._is_admin():
+            return True
+        if self._bearer_token() is None:
+            self._error(401, "authorization required")
+        else:
+            self._error(403, "admin token required")
+        return False
+
+    def _handle_pairings_list(self) -> None:
+        if not self._require_admin():
+            return
+        self._send_json(200, {"devices": self.api.pairing.list_tokens()})
+
+    def _handle_pairings_revoke(self) -> None:
+        if not self._require_admin():
+            return
+        payload = self._read_json()
+        if payload is None:
+            return
+        count = self.api.pairing.revoke_by_preview(payload.get("token_preview"))
+        if not count:
+            self._error(404, "no matching companion token")
+            return
+        self._send_json(200, {"revoked": True, "count": count})
 
     def _send_pairing(self) -> None:
         # The code is only retrievable from the same machine. A mobile client
@@ -407,7 +471,9 @@ class _RequestHandler(BaseHTTPRequestHandler):
             import time
             token = secrets.token_urlsafe(32)
             expires_at = time.time() + 24 * 60 * 60  # 24 hours
-            self.api.pairing._tokens[token] = expires_at
+            self.api.pairing.register_token(
+                token, expires_at, device_name="Supabase-paired device"
+            )
             self._send_json(200, {
                 "access_token": token,
                 "token_type": "Bearer",
@@ -528,12 +594,18 @@ class _RequestHandler(BaseHTTPRequestHandler):
         if parsed.path == f"{API_PREFIX}/auth/pair":
             self._handle_auth_pair()
             return
+        if parsed.path == f"{API_PREFIX}/pairings/revoke":
+            self._handle_pairings_revoke()
+            return
         if parsed.path == f"{API_PREFIX}/pairing/exchange":
             payload = self._read_json()
             if payload is None:
                 return
             try:
-                result = self.api.pairing.exchange(payload.get("code"))
+                result = self.api.pairing.exchange(
+                    payload.get("code"),
+                    device_name=payload.get("device_name") or "",
+                )
             except PairingRateLimitedError as exc:
                 self._send_json(
                     429,
