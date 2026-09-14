@@ -7,7 +7,7 @@ import time
 
 
 class SessionLogger:
-    def __init__(self, path: str, session_id: str | None = None):
+    def __init__(self, path: str, session_id: str | None = None, **_kwargs):
         d = os.path.dirname(path)
         if d:
             try:

@@ -1,5 +1,97 @@
+from yolo.score import compute_safety_score
 from yolo.session_log import SessionLogger
-from yolo.summary import BuildSummary, PrintSummary
+from yolo.summary import (
+    BuildSummary,
+    PrintSummary,
+    _build_summary_from_db,
+)
+
+
+class _FakeResponse:
+    def __init__(self, data):
+        self.data = data
+
+
+class _FakeQuery:
+    def __init__(self, data):
+        self._data = data
+
+    def select(self, *_) -> "_FakeQuery":
+        return self
+
+    def eq(self, *_) -> "_FakeQuery":
+        return self
+
+    def order(self, *_, **__) -> "_FakeQuery":
+        return self
+
+    def limit(self, _) -> "_FakeQuery":
+        return self
+
+    def execute(self):
+        return _FakeResponse(self._data)
+
+
+class _FakeDb:
+    def __init__(self, tables):
+        self._tables = tables
+
+    def table(self, name):
+        return _FakeQuery(self._tables.get(name, []))
+
+
+def test_build_summary_includes_safety_score(tmp_path):
+    path = tmp_path / "s.jsonl"
+    log = SessionLogger(str(path))
+    log.frame_sample(90.0, 0.1, 0.2, 0.0, 0.0, 0.0, True, None)
+    log.alert_event("yolo", 2.0)
+    log.close()
+
+    s = BuildSummary(str(path))
+    assert s["safety_score"] == compute_safety_score(90.0, 1)
+
+
+def test_build_summary_empty_log_safety_score_is_zero(tmp_path):
+    summary = BuildSummary(str(tmp_path / "missing.jsonl"))
+    assert summary["safety_score"] == 0.0
+
+
+def test_summary_from_db_fast_path_passes_through_safety_score():
+    # Row stores safety_score=99 while avg_attention=91.5 and alert_count=1
+    # would recompute to 88.5 — the stored value must win (no divergence).
+    db = _FakeDb({
+        "sessions": [{
+            "duration_s": 120.0,
+            "avg_attention": 91.5,
+            "avg_perclos": 0.2,
+            "alert_count": 1,
+            "safety_score": 99,
+            "alerts_by_type": '{"yolo": 1}',
+        }],
+    })
+    s = _build_summary_from_db(db, "sess-1")
+    assert s["safety_score"] == 99
+    assert s["alert_count"] == 1
+    assert s["alerts_by_type"] == {"yolo": 1}
+
+
+def test_summary_from_db_fallback_computes_score_and_alert_times():
+    db = _FakeDb({
+        "sessions": [{"duration_s": None}],  # forces fallback
+        "telemetry": [
+            {"attention": 90.0, "perclos": 0.1, "blinks_per_min": 15.0},
+            {"attention": 80.0, "perclos": 0.2, "blinks_per_min": 17.0},
+        ],
+        "alert_events": [
+            {"alert": "yolo", "ts": 1000.0},
+            {"alert": "perclos", "ts": 1180.0},
+        ],
+    })
+    s = _build_summary_from_db(db, "sess-1")
+    assert s["alert_times"] == [1000.0, 1180.0]
+    assert s["alerts_by_type"] == {"yolo": 1, "perclos": 1}
+    assert s["avg_attention"] == 85.0
+    assert s["safety_score"] == compute_safety_score(85.0, 2)
 
 
 def test_build_summary(tmp_path):

@@ -7,7 +7,7 @@ import 'package:flutter/foundation.dart';
 
 import '../models/monitoring_snapshot.dart';
 
-enum BackendConnectionState { disconnected, connecting, connected, error }
+enum BackendConnectionState { disconnected, connecting, connected, error, authRejected }
 
 // ─── Client-side severity smoother ────────────────────────────────────────
 // The backend already applies EMA to all numeric telemetry fields. This
@@ -101,6 +101,7 @@ class _SnapshotSmoother {
       calibrationProgress: raw.calibrationProgress,
       calibrationError: raw.calibrationError,
       calibrationValidSamples: raw.calibrationValidSamples,
+      startupCountdown: raw.startupCountdown,
     );
   }
 
@@ -355,6 +356,30 @@ class MonitoringClient extends ChangeNotifier {
           _apply(response);
           delay = const Duration(milliseconds: 250);
         }
+      } on SocketException {
+        // The backend answered but closed the stream — treat like any other
+        // transport hiccup so the retry loop keeps its normal cadence.
+        if (generation != _generation || _disposed) return;
+        connectionState = BackendConnectionState.connecting;
+        errorMessage = null;
+        notifyListeners();
+        await Future<void>.delayed(delay);
+      } on HttpException catch (error) {
+        if (generation != _generation || _disposed) return;
+        // A 401 means the stored credential is dead (desktop reinstalled,
+        // token revoked or expired). Retrying forever would just burn the
+        // battery; surface it so the app can refresh or re-pair instead.
+        final unauthorized = error.message.contains('401');
+        connectionState = unauthorized
+            ? BackendConnectionState.authRejected
+            : BackendConnectionState.error;
+        errorMessage = error.message;
+        notifyListeners();
+        if (unauthorized) return; // stop hammering; recovery is caller's job
+        await Future<void>.delayed(delay);
+        delay = Duration(
+          milliseconds: (delay.inMilliseconds * 2).clamp(250, 5000).toInt(),
+        );
       } catch (error) {
         if (generation != _generation || _disposed) return;
         connectionState = BackendConnectionState.error;
@@ -442,6 +467,41 @@ class MonitoringClient extends ChangeNotifier {
     lastUpdate = null;
     connect();
     return result;
+  }
+
+  /// Admin: list live companion tokens (desktop settings screen). Requires
+  /// the deployment token; the backend refuses companion tokens (403).
+  Future<List<PairingDevice>> listPairings() async {
+    final request = await _http.getUrl(Uri.parse('$_baseUrl/api/v1/pairings'));
+    _headers().forEach(request.headers.add);
+    final response = await request.close();
+    final body = await response.transform(utf8.decoder).join();
+    if (response.statusCode != HttpStatus.ok) {
+      throw HttpException('Pairing list returned ${response.statusCode}: $body');
+    }
+    final result = jsonDecode(body) as Map<String, dynamic>;
+    final devices = result['devices'] as List<dynamic>? ?? [];
+    return devices
+        .map((d) => PairingDevice.fromJson(d as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Admin: revoke a companion token by its preview. Returns false when the
+  /// backend reports no match (404).
+  Future<bool> revokePairing(String tokenPreview) async {
+    final request = await _http.postUrl(
+      Uri.parse('$_baseUrl/api/v1/pairings/revoke'),
+    );
+    request.headers.contentType = ContentType.json;
+    _headers().forEach(request.headers.add);
+    request.write(jsonEncode(<String, dynamic>{'token_preview': tokenPreview}));
+    final response = await request.close();
+    if (response.statusCode == HttpStatus.notFound) return false;
+    if (response.statusCode != HttpStatus.ok) {
+      final body = await response.transform(utf8.decoder).join();
+      throw HttpException('Revoke returned ${response.statusCode}: $body');
+    }
+    return true;
   }
 
   Future<Map<String, dynamic>> fetchCurrentSummary() async {
@@ -547,4 +607,33 @@ class MonitoringClient extends ChangeNotifier {
     _http.close(force: true);
     super.dispose();
   }
+}
+
+/// One live companion token as shown in the desktop's pairing admin UI.
+/// Carries only a preview — the secret never leaves the backend.
+class PairingDevice {
+  PairingDevice({
+    required this.tokenPreview,
+    required this.deviceName,
+    required this.issuedAt,
+    required this.expiresAt,
+  });
+
+  factory PairingDevice.fromJson(Map<String, dynamic> json) => PairingDevice(
+        tokenPreview: json['token_preview'] as String? ?? '',
+        deviceName: (json['device_name'] as String?)?.trim().isEmpty == true
+            ? 'Unknown'
+            : (json['device_name'] as String?) ?? 'Unknown',
+        issuedAt: DateTime.fromMillisecondsSinceEpoch(
+            ((json['issued_at'] as num? ?? 0) * 1000).toInt()),
+        expiresAt: DateTime.fromMillisecondsSinceEpoch(
+            ((json['expires_at'] as num? ?? 0) * 1000).toInt()),
+      );
+
+  final String tokenPreview;
+  final String deviceName;
+  final DateTime issuedAt;
+  final DateTime expiresAt;
+
+  bool get isExpired => DateTime.now().isAfter(expiresAt);
 }

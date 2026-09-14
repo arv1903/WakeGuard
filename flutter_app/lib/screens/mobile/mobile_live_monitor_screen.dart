@@ -1,24 +1,20 @@
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
 
 import '../../models/monitoring_snapshot.dart';
 import '../../services/monitoring_client.dart';
 import '../../theme.dart';
+import '../../utils/gauge_math.dart';
+import '../../utils/safety_grading.dart';
+import '../../widgets/mjpeg_view.dart';
 
-/// Mobile-optimised live monitoring screen.
+/// Mobile-optimised live monitoring screen matching the Stitch mockup.
 ///
-/// Shows camera feed, status banner, metric cards, and alert history —
-/// matching the Stitch "Live Monitor" mockup with vertical layout.
+/// Shows the live camera feed, circular attention gauge, head pose vectors,
+/// session stats, and stop button.
 class MobileLiveMonitorScreen extends StatefulWidget {
-  const MobileLiveMonitorScreen({
-    super.key,
-    required this.client,
-    this.sessionStartTime,
-  });
+  const MobileLiveMonitorScreen({super.key, required this.client});
 
   final MonitoringClient client;
-  final DateTime? sessionStartTime;
 
   @override
   State<MobileLiveMonitorScreen> createState() =>
@@ -26,6 +22,8 @@ class MobileLiveMonitorScreen extends StatefulWidget {
 }
 
 class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
+  bool _stopping = false;
+
   @override
   void initState() {
     super.initState();
@@ -40,6 +38,21 @@ class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
 
   void _onUpdate() {
     if (mounted) setState(() {});
+  }
+
+  /// Elapsed session time from the live snapshot's tripStartedAt (unix
+  /// seconds), interpreted the same way as the desktop's trip timer.
+  String _formatDuration(MonitoringSnapshot snap) {
+    final started = snap.tripStartedAt;
+    if (started == null || started <= 0) return '00:00:00';
+    final start =
+        DateTime.fromMillisecondsSinceEpoch((started * 1000).toInt());
+    final diff = DateTime.now().difference(start);
+    if (diff.isNegative) return '00:00:00';
+    final h = diff.inHours.toString().padLeft(2, '0');
+    final m = (diff.inMinutes % 60).toString().padLeft(2, '0');
+    final s = (diff.inSeconds % 60).toString().padLeft(2, '0');
+    return '$h:$m:$s';
   }
 
   @override
@@ -61,7 +74,6 @@ class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          // Connected badge
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
@@ -101,7 +113,6 @@ class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
             ),
           ),
           const SizedBox(height: 24),
-          // Card
           Container(
             width: 320,
             padding: const EdgeInsets.all(32),
@@ -109,16 +120,9 @@ class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
               color: Stitch.container,
               borderRadius: BorderRadius.circular(12),
               border: Border.all(color: Stitch.containerHighest),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.3),
-                  blurRadius: 16,
-                ),
-              ],
             ),
             child: Column(
               children: [
-                // Shield icon in circle
                 Container(
                   width: 128,
                   height: 128,
@@ -152,7 +156,6 @@ class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 24),
-                // Divider
                 Container(
                   height: 1,
                   decoration: const BoxDecoration(
@@ -166,14 +169,14 @@ class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
                   ),
                 ),
                 const SizedBox(height: 16),
-                // Standing by
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Icon(
                       Icons.sensors,
                       size: 16,
-                      color: Stitch.onSurfaceVariant.withValues(alpha: 0.5),
+                      color:
+                          Stitch.onSurfaceVariant.withValues(alpha: 0.5),
                     ),
                     const SizedBox(width: 8),
                     Text(
@@ -182,8 +185,8 @@ class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
                         fontSize: 11,
                         fontFamily: 'JetBrains Mono',
                         fontWeight: FontWeight.w500,
-                        color:
-                            Stitch.onSurfaceVariant.withValues(alpha: 0.5),
+                        color: Stitch.onSurfaceVariant
+                            .withValues(alpha: 0.5),
                         letterSpacing: 2,
                       ),
                     ),
@@ -203,231 +206,91 @@ class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
     return Container(
       color: Stitch.background,
       child: SingleChildScrollView(
-        padding: const EdgeInsets.only(bottom: 80),
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 80),
         child: Column(
           children: [
-            // Camera feed
-            _buildCameraFeed(),
+            const SizedBox(height: 12),
             // Status banner
             _buildStatusBanner(snap),
-            // Metric cards grid
-            _buildMetricGrid(snap),
-            // Alert history
-            _buildAlertHistory(),
+            const SizedBox(height: 16),
+            // Live camera feed
+            _buildCameraFeed(snap),
+            const SizedBox(height: 16),
+            // Main attention gauge
+            _buildAttentionGauge(snap),
+            const SizedBox(height: 16),
+            // Head pose vectors
+            _buildHeadPoseSection(snap),
+            const SizedBox(height: 16),
+            // Session stats grid
+            _buildSessionStats(snap),
+            const SizedBox(height: 16),
+            // Stop button
+            _buildStopButton(),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildCameraFeed() {
-    return ValueListenableBuilder<Uint8List?>(
-      valueListenable: widget.client.latestFrameBytes,
-      builder: (_, bytes, __) {
-        return AspectRatio(
-          aspectRatio: 16 / 9,
-          child: Container(
-          width: double.infinity,
-          color: Colors.black,
-          child: bytes != null
-              ? Image.memory(
-                  bytes,
-                  fit: BoxFit.cover,
-                  gaplessPlayback: true,
-                  opacity: const AlwaysStoppedAnimation(0.85),
-                )
-              : Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    Container(
-                      width: 64,
-                      height: 64,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Stitch.primary.withValues(alpha: 0.2),
-                      ),
-                      child: const Icon(
-                        Icons.play_arrow,
-                        size: 32,
-                        color: Stitch.primary,
-                      ),
-                    ),
-                    // REC badge
-                    Positioned(
-                      bottom: 12,
-                      right: 12,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: Stitch.containerHighest.withValues(alpha: 0.8),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Container(
-                              width: 8,
-                              height: 8,
-                              decoration: const BoxDecoration(
-                                color: Stitch.error,
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                            const SizedBox(width: 6),
-                            const Text(
-                              'REC',
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontFamily: 'JetBrains Mono',
-                                fontWeight: FontWeight.w500,
-                                color: Stitch.onSurface,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    // Camera label
-                    Positioned(
-                      top: 12,
-                      left: 12,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: Stitch.containerHighest.withValues(alpha: 0.8),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: const Text(
-                          'IR_CAM_01',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontFamily: 'JetBrains Mono',
-                            fontWeight: FontWeight.w500,
-                            color: Stitch.primary,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-          ),
-        );
-      },
-    );
-  }
+  // ── Status Banner ────────────────────────────────────────────────────────
 
   Widget _buildStatusBanner(MonitoringSnapshot snap) {
     final sev = snap.alertSeverity;
-    Color bgColor;
-    Color fgColor;
+    Color color;
     String label;
-    String subtitle;
 
-    if (sev >= 4) {
-      bgColor = Stitch.errorContainer;
-      fgColor = Stitch.onErrorContainer;
-      label = 'CRITICAL';
-      subtitle = 'Immediate attention required';
-    } else if (sev >= 3) {
-      bgColor = Stitch.tertiaryContainer.withValues(alpha: 0.3);
-      fgColor = Stitch.tertiary;
-      label = 'DROWSY';
-      subtitle = 'Driver showing fatigue signs';
+    if (sev >= 3) {
+      // Severity 3+ means the alarm is sounding — same red as the grade.
+      color = Stitch.error;
+      label = snap.alert ?? 'CRITICAL';
     } else if (sev >= 2) {
-      bgColor = Stitch.tertiary.withValues(alpha: 0.15);
-      fgColor = Stitch.tertiary;
-      label = 'DISTRACTED';
-      subtitle = 'Head pose deviation detected';
-    } else if (snap.focused) {
-      bgColor = Stitch.secondaryContainer;
-      fgColor = Stitch.onSecondaryContainer;
-      label = 'FOCUSED';
-      subtitle = 'Wakefulness optimal';
-    } else if (snap.unfocused) {
-      bgColor = Stitch.tertiaryContainer.withValues(alpha: 0.2);
-      fgColor = Stitch.tertiary;
-      label = 'UNFOCUSED';
-      subtitle = 'Attention below threshold';
-    } else if (snap.faceLost) {
-      bgColor = Stitch.containerHighest;
-      fgColor = Stitch.onSurfaceVariant;
-      label = 'FACE LOST';
-      subtitle = 'Driver not detected';
+      color = Stitch.tertiaryFixedDim;
+      label = snap.alert ?? 'DISTRACTED';
     } else {
-      bgColor = Stitch.secondaryContainer;
-      fgColor = Stitch.onSecondaryContainer;
-      label = 'MONITORING';
-      subtitle = 'System active';
+      color = Stitch.secondary;
+      label = 'All Clear - Safe Driving';
     }
 
     return Container(
-      margin: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+      width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: bgColor,
+        color: color.withValues(alpha: 0.15),
         borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
-            color: bgColor.withValues(alpha: 0.3),
-            blurRadius: 24,
-            offset: const Offset(0, 4),
+            color: color.withValues(alpha: 0.2),
+            blurRadius: 16,
           ),
         ],
       ),
       child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          // Info
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontFamily: 'JetBrains Mono',
-                    fontWeight: FontWeight.w500,
-                    color: fgColor.withValues(alpha: 0.7),
-                    letterSpacing: 2,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  subtitle,
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: fgColor,
-                  ),
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: color.withValues(alpha: 0.8),
+                  blurRadius: 8,
                 ),
               ],
             ),
           ),
-          // Circular attention gauge
-          SizedBox(
-            width: 64,
-            height: 64,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                CircularProgressIndicator(
-                  value: snap.attention / 100,
-                  strokeWidth: 5,
-                  backgroundColor: fgColor.withValues(alpha: 0.2),
-                  valueColor: AlwaysStoppedAnimation(fgColor),
-                ),
-                Text(
-                  '${snap.attention.round()}%',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontFamily: 'JetBrains Mono',
-                    fontWeight: FontWeight.w500,
-                    color: fgColor,
-                  ),
-                ),
-              ],
+          const SizedBox(width: 12),
+          Text(
+            label.toUpperCase(),
+            style: TextStyle(
+              fontSize: 14,
+              fontFamily: 'JetBrains Mono',
+              fontWeight: FontWeight.w600,
+              color: color,
+              letterSpacing: 1.5,
             ),
           ),
         ],
@@ -435,150 +298,501 @@ class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
     );
   }
 
-  Widget _buildMetricGrid(MonitoringSnapshot snap) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
+  // ── Live Camera Feed ─────────────────────────────────────────────────────
+
+  Widget _buildCameraFeed(MonitoringSnapshot snap) {
+    return Container(
+      width: double.infinity,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: Stitch.surfaceLow,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.3),
+            blurRadius: 16,
+          ),
+        ],
+      ),
+      child: AspectRatio(
+        aspectRatio: 16 / 10,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            MjpegView(client: widget.client),
+            Positioned(
+              left: 12,
+              top: 12,
+              child: _FeedBadge(
+                icon: snap.faceFound ? Icons.person : Icons.person_off,
+                label: snap.faceFound ? 'DRIVER DETECTED' : 'NO FACE',
+                color: snap.faceFound ? Stitch.secondary : Stitch.tertiaryFixedDim,
+              ),
+            ),
+            Positioned(
+              right: 12,
+              top: 12,
+              child: _FeedBadge(
+                icon: Icons.circle,
+                label: 'LIVE',
+                color: Stitch.error,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Attention Gauge (SVG-style) ──────────────────────────────────────────
+
+  Widget _buildAttentionGauge(MonitoringSnapshot snap) {
+    final score = snap.attention.round();
+    final progress = snap.attention / 100;
+    // Same 80/60 band colors as the post-trip grade — one color language.
+    final scoreColor = gradeSafetyScore(snap.attention).color;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Stitch.surfaceLow,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.3),
+            blurRadius: 16,
+          ),
+        ],
+      ),
       child: Column(
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: _MetricCard(
-                  icon: Icons.psychology,
-                  label: 'Attention',
-                  value: '${snap.attention.round()}%',
-                  color: Stitch.secondary,
-                  barValue: snap.attention / 100,
+          SizedBox(
+            width: 200,
+            height: 200,
+            child: CustomPaint(
+              painter: _GaugePainter(
+                progress: progress,
+                trackColor: Stitch.containerHighest,
+                fillColor: scoreColor,
+              ),
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'SYS_SCORE',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontFamily: 'JetBrains Mono',
+                        fontWeight: FontWeight.w600,
+                        color: scoreColor.withValues(alpha: 0.8),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '$score',
+                          style: const TextStyle(
+                            fontSize: 48,
+                            fontWeight: FontWeight.w700,
+                            color: Stitch.onSurface,
+                            height: 1,
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Text(
+                            '%',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontFamily: 'JetBrains Mono',
+                              fontWeight: FontWeight.w700,
+                              color: scoreColor,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _MetricCard(
-                  icon: Icons.visibility_off,
-                  label: 'PERCLOS',
-                  value: '${(snap.perclos * 100).round()}%',
-                  color: snap.perclos > 0.5 ? Stitch.error : Stitch.primary,
-                  barValue: snap.perclos,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: _MetricCard(
-                  icon: Icons.remove_red_eye,
-                  label: 'EAR',
-                  value: snap.ear != null
-                      ? snap.ear!.toStringAsFixed(2)
-                      : '—',
-                  color: Stitch.primary,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _MetricCard(
-                  icon: Icons.speed,
-                  label: 'Blinks/Min',
-                  value: '${snap.blinksPerMin.round()}',
-                  color: Stitch.tertiary,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: _MetricCard(
-                  icon: Icons.swap_vert,
-                  label: 'Head Pitch',
-                  value: '${snap.pitch.round()}°',
-                  color: Stitch.tertiaryFixedDim,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _MetricCard(
-                  icon: Icons.swap_horiz,
-                  label: 'Head Yaw',
-                  value: '${snap.yaw.round()}°',
-                  color: Stitch.tertiaryContainer,
-                ),
-              ),
-            ],
+            ),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildAlertHistory() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+  // ── Head Pose Section ────────────────────────────────────────────────────
+
+  Widget _buildHeadPoseSection(MonitoringSnapshot snap) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Stitch.surfaceLow,
+        borderRadius: BorderRadius.circular(12),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text(
-                'Alert History',
-                style: TextStyle(
-                  fontSize: 18,
+              Row(
+                children: [
+                  const Icon(Icons.sensors,
+                      size: 16, color: Stitch.onSurfaceVariant),
+                  const SizedBox(width: 8),
+                  Text(
+                    'HEAD POSE VECTORS',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontFamily: 'JetBrains Mono',
+                      fontWeight: FontWeight.w500,
+                      color: Stitch.onSurfaceVariant.withValues(alpha: 0.7),
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                ],
+              ),
+              Container(
+                width: 6,
+                height: 6,
+                decoration: const BoxDecoration(
+                  color: Stitch.primary,
+                  shape: BoxShape.circle,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          _PoseBar(
+            label: 'PITCH',
+            symbol: 'θ',
+            value: snap.pitch,
+            color: Stitch.primary,
+          ),
+          const SizedBox(height: 16),
+          _PoseBar(
+            label: 'YAW',
+            symbol: 'ψ',
+            value: snap.yaw,
+            color: Stitch.secondary,
+          ),
+          const SizedBox(height: 16),
+          _PoseBar(
+            label: 'ROLL',
+            symbol: 'φ',
+            value: snap.roll,
+            color: Stitch.primary,
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Session Stats Grid ───────────────────────────────────────────────────
+
+  Widget _buildSessionStats(MonitoringSnapshot snap) {
+    return Row(
+      children: [
+        Expanded(
+          child: _StatBlock(
+            label: 'SESSION T+',
+            value: _formatDuration(snap),
+            showCursor: true,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: _StatBlock(
+            label: 'SENSOR FPS',
+            value: snap.fps.toStringAsFixed(1),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ── Stop Button ──────────────────────────────────────────────────────────
+
+  Widget _buildStopButton() {
+    return SizedBox(
+      width: double.infinity,
+      height: 56,
+      child: ElevatedButton(
+        onPressed: _stopping
+            ? null
+            : () async {
+                setState(() => _stopping = true);
+                try {
+                  await widget.client.sendCommand('/api/v1/session/stop');
+                } catch (e) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Stop failed: $e'),
+                        backgroundColor: Stitch.error,
+                      ),
+                    );
+                  }
+                }
+                if (mounted) setState(() => _stopping = false);
+              },
+        style: ElevatedButton.styleFrom(
+          backgroundColor: Stitch.error,
+          foregroundColor: Stitch.onError,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          elevation: 4,
+          shadowColor: Stitch.error.withValues(alpha: 0.3),
+        ),
+        child: _stopping
+            ? const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: Stitch.onError),
+              )
+            : const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.stop_circle, size: 20),
+                  SizedBox(width: 8),
+                  Text(
+                    'STOP SESSION',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontFamily: 'JetBrains Mono',
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                ],
+              ),
+      ),
+    );
+  }
+}
+
+// ─── Gauge Painter ───────────────────────────────────────────────────────────
+
+class _GaugePainter extends CustomPainter {
+  _GaugePainter({
+    required this.progress,
+    required this.trackColor,
+    required this.fillColor,
+  });
+
+  final double progress;
+  final Color trackColor;
+  final Color fillColor;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = size.width / 2 - 12;
+
+    // Track (dashed circle)
+    final trackPaint = Paint()
+      ..color = trackColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 6;
+
+    // Draw dashed circle
+    const dashCount = 60;
+    const gapAngle = 0.04;
+    for (int i = 0; i < dashCount; i++) {
+      final angle = (i / dashCount) * 3.14159 * 2;
+      final startAngle = angle;
+      final sweepAngle = (3.14159 * 2 / dashCount) - gapAngle;
+      canvas.drawArc(
+        Rect.fromCircle(center: center, radius: radius),
+        startAngle,
+        sweepAngle,
+        false,
+        trackPaint,
+      );
+    }
+
+    // Fill arc
+    final fillPaint = Paint()
+      ..color = fillColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 8
+      ..strokeCap = StrokeCap.butt;
+
+    // Glow effect
+    final glowPaint = Paint()
+      ..color = fillColor.withValues(alpha: 0.3)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 16
+      ..strokeCap = StrokeCap.butt
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8);
+
+    // Full-circle sweep from 12 o'clock; clamped so the arc can never
+    // over-draw (the old formula shifted every value by a quarter turn).
+    final sweepAngle = gaugeSweepRadians(progress);
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius),
+      gaugeStartAngle,
+      sweepAngle,
+      false,
+      glowPaint,
+    );
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius),
+      gaugeStartAngle,
+      sweepAngle,
+      false,
+      fillPaint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _GaugePainter oldDelegate) {
+    return oldDelegate.progress != progress ||
+        oldDelegate.fillColor != fillColor;
+  }
+}
+
+// ─── Pose Bar ───────────────────────────────────────────────────────────────
+
+class _PoseBar extends StatelessWidget {
+  const _PoseBar({
+    required this.label,
+    required this.symbol,
+    required this.value,
+    required this.color,
+  });
+
+  final String label;
+  final String symbol;
+  final double value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    // Map value to 0-100% for the bar width
+    final barPercent = ((value.abs() / 30.0) * 100).clamp(10.0, 100.0);
+    final sign = value >= 0 ? '+' : '';
+    final display = '$sign${value.toStringAsFixed(1)}°';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              '$label ($symbol)',
+              style: const TextStyle(
+                fontSize: 14,
+                fontFamily: 'JetBrains Mono',
+                fontWeight: FontWeight.w500,
+                color: Stitch.onSurfaceVariant,
+              ),
+            ),
+            Text(
+              display,
+              style: TextStyle(
+                fontSize: 14,
+                fontFamily: 'JetBrains Mono',
+                fontWeight: FontWeight.w500,
+                color: color,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Container(
+          height: 8,
+          width: double.infinity,
+          decoration: BoxDecoration(
+            color: Stitch.containerHighest,
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: FractionallySizedBox(
+              widthFactor: barPercent / 100,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ─── Stat Block ─────────────────────────────────────────────────────────────
+
+class _StatBlock extends StatelessWidget {
+  const _StatBlock({
+    required this.label,
+    required this.value,
+    this.showCursor = false,
+  });
+
+  final String label;
+  final String value;
+  final bool showCursor;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Stitch.surfaceLow,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              fontFamily: 'JetBrains Mono',
+              fontWeight: FontWeight.w500,
+              color: Stitch.onSurfaceVariant.withValues(alpha: 0.7),
+              letterSpacing: 1.5,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Text(
+                value,
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontFamily: 'JetBrains Mono',
                   fontWeight: FontWeight.w600,
                   color: Stitch.onSurface,
                 ),
               ),
-              TextButton.icon(
-                onPressed: () {},
-                icon: const Icon(Icons.filter_list, size: 16),
-                label: const Text(
-                  'FILTER',
+              if (showCursor)
+                Text(
+                  '_',
                   style: TextStyle(
-                    fontSize: 11,
+                    fontSize: 20,
                     fontFamily: 'JetBrains Mono',
-                    fontWeight: FontWeight.w500,
-                    letterSpacing: 1,
+                    fontWeight: FontWeight.w600,
+                    color: Stitch.onSurfaceVariant.withValues(alpha: 0.5),
                   ),
                 ),
-                style: TextButton.styleFrom(
-                  foregroundColor: Stitch.primary,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                ),
-              ),
             ],
-          ),
-          const SizedBox(height: 8),
-          // Sample alerts (would be wired to real alert history)
-          _AlertItem(
-            icon: Icons.warning,
-            bgColor: Stitch.errorContainer,
-            fgColor: Stitch.onErrorContainer,
-            title: 'Microsleep Detected',
-            subtitle: 'PERCLOS spike > 15%',
-            time: '10:42 AM',
-          ),
-          const SizedBox(height: 8),
-          _AlertItem(
-            icon: Icons.phone_in_talk,
-            bgColor: Stitch.tertiaryContainer.withValues(alpha: 0.2),
-            fgColor: Stitch.tertiary,
-            title: 'Distraction: Device',
-            subtitle: 'Head yaw deviation',
-            time: '09:15 AM',
-          ),
-          const SizedBox(height: 8),
-          _AlertItem(
-            icon: Icons.info,
-            bgColor: Stitch.containerHighest,
-            fgColor: Stitch.onSurfaceVariant,
-            title: 'Session Started',
-            subtitle: 'Calibration successful',
-            time: '08:00 AM',
-            dimmed: true,
           ),
         ],
       ),
@@ -586,180 +800,38 @@ class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
   }
 }
 
-// ─── Metric Card ─────────────────────────────────────────────────────────────
-
-class _MetricCard extends StatelessWidget {
-  const _MetricCard({
+class _FeedBadge extends StatelessWidget {
+  const _FeedBadge({
     required this.icon,
     required this.label,
-    required this.value,
     required this.color,
-    this.barValue,
   });
 
   final IconData icon;
   final String label;
-  final String value;
   final Color color;
-  final double? barValue;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: Stitch.container,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Flexible(
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(icon, size: 14, color: Stitch.onSurfaceVariant),
-                    const SizedBox(width: 4),
-                    Flexible(
-                      child: Text(
-                        label,
-                        style: const TextStyle(
-                          fontSize: 11,
-                          fontFamily: 'JetBrains Mono',
-                          fontWeight: FontWeight.w500,
-                          color: Stitch.onSurfaceVariant,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.w700,
-              color: color,
-            ),
-          ),
-          if (barValue != null) ...[
-            const SizedBox(height: 8),
-            Container(
-              height: 3,
-              decoration: BoxDecoration(
-                color: Stitch.containerHighest,
-                borderRadius: BorderRadius.circular(2),
-              ),
-              child: FractionallySizedBox(
-                widthFactor: barValue!.clamp(0.0, 1.0),
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: color,
-                    borderRadius: BorderRadius.circular(2),
-                    boxShadow: [
-                      BoxShadow(
-                        color: color.withValues(alpha: 0.5),
-                        blurRadius: 8,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-// ─── Alert Item ──────────────────────────────────────────────────────────────
-
-class _AlertItem extends StatelessWidget {
-  const _AlertItem({
-    required this.icon,
-    required this.bgColor,
-    required this.fgColor,
-    required this.title,
-    required this.subtitle,
-    required this.time,
-    this.dimmed = false,
-  });
-
-  final IconData icon;
-  final Color bgColor;
-  final Color fgColor;
-  final String title;
-  final String subtitle;
-  final String time;
-  final bool dimmed;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Stitch.container,
-        borderRadius: BorderRadius.circular(8),
+        color: Colors.black.withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(6),
       ),
       child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          // Icon circle
-          Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: bgColor,
-              shape: BoxShape.circle,
-            ),
-            child: Icon(icon, color: fgColor, size: 22),
-          ),
-          const SizedBox(width: 14),
-          // Text
-          Expanded(
-            child: Opacity(
-              opacity: dimmed ? 0.7 : 1.0,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontFamily: 'JetBrains Mono',
-                      fontWeight: FontWeight.w500,
-                      color: fgColor,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    subtitle,
-                    style: const TextStyle(
-                      fontSize: 11,
-                      color: Stitch.onSurfaceVariant,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 4),
           Text(
-            time,
-            style: const TextStyle(
-              fontSize: 11,
+            label,
+            style: TextStyle(
+              fontSize: 10,
               fontFamily: 'JetBrains Mono',
-              fontWeight: FontWeight.w500,
-              color: Stitch.onSurfaceVariant,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1,
+              color: color,
             ),
           ),
         ],

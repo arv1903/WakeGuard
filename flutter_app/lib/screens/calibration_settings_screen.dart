@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 
 import '../services/monitoring_client.dart';
 import '../theme.dart';
+import 'pairing_devices_card.dart';
+import 'pairing_qr_dialog.dart';
 
 class CalibrationSettingsScreen extends StatefulWidget {
   const CalibrationSettingsScreen({super.key, required this.client});
@@ -164,8 +166,64 @@ class _CalibrationSettingsScreenState extends State<CalibrationSettingsScreen>
         _buildSensitivitySection(),
         const SizedBox(height: 24),
         _buildModulesSection(),
+        const SizedBox(height: 24),
+        _buildPairingCard(),
       ]),
     ));
+  }
+
+  Widget _buildPairingCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                      color: AppColors.surface2,
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: const Color(0x44444748))),
+                  child: const Icon(Icons.smartphone,
+                      size: 18, color: AppColors.textPrimary)),
+              const SizedBox(width: 12),
+              const Expanded(
+                  child: Text('Companion Devices',
+                      style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textPrimary))),
+            ]),
+            const SizedBox(height: 4),
+            const Text(
+                'Pair the WakeGuard mobile app by scanning a QR code — no address '
+                'typing needed, and it works on networks where discovery is blocked.',
+                style: TextStyle(fontSize: 14, color: AppColors.textSecondary)),
+            const SizedBox(height: 16),
+            PairingDevicesCard(
+              client: widget.client,
+              onShowQr: () => showDialog(
+                context: context,
+                builder: (_) => PairingQrDialog(client: widget.client),
+              ),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              key: const Key('pairing-qr-button'),
+              onPressed: () => showDialog(
+                context: context,
+                builder: (_) => PairingQrDialog(client: widget.client),
+              ),
+              icon: const Icon(Icons.qr_code_2, size: 18),
+              label: const Text('SHOW PAIRING QR'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildSensitivitySection() {
