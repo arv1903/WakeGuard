@@ -13,6 +13,7 @@ from functools import partial
 from datetime import datetime, timezone
 import json
 import ipaddress
+import socket
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
@@ -24,11 +25,34 @@ from urllib.parse import parse_qs, urlparse
 
 from .monitoring import MonitoringSnapshot, MonitoringStore, SNAPSHOT_SCHEMA_VERSION
 from .pairing import PairingManager, PairingRateLimitedError
-from .db import verify_jwt, auth_register, auth_login, get_db, is_configured as supabase_configured
+from .db import (verify_jwt, auth_register, auth_login, auth_refresh, get_db,
+                 is_configured as supabase_configured)
 
 
 API_PREFIX = "/api/v1"
 _MAX_BODY_BYTES = 64 * 1024
+
+
+def _primary_lan_address() -> str | None:
+    """Best-effort primary LAN IPv4 address, or ``None``.
+
+    Opens a UDP "connection" to a public address — no packets are sent, but
+    the OS picks the routable source interface, which is exactly the address
+    a phone on the same LAN must dial. Loopback means "this machine"; a QR
+    embedding it makes a phone connect to itself (errno 11).
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.settimeout(0.0)
+        sock.connect(("8.8.8.8", 80))
+        addr = sock.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        sock.close()
+    if addr in ("127.0.0.1", "0.0.0.0", ""):
+        return None
+    return addr
 
 CommandHandler = Callable[[str, dict[str, Any]], dict[str, Any] | None]
 SummaryProvider = Callable[[], dict[str, Any]]
@@ -305,7 +329,14 @@ class _RequestHandler(BaseHTTPRequestHandler):
         if not self._is_local_address(client_ip):
             self._error(403, "pairing code is local-only")
             return
-        self._send_json(200, self.api.pairing.details())
+        payload = self.api.pairing.details()
+        # Hand the QR dialog a routable LAN address so a scanned phone never
+        # dials loopback. Omitted when the desktop has no non-loopback route.
+        lan_host = _primary_lan_address()
+        if lan_host is not None:
+            payload["lan_host"] = lan_host
+            payload["lan_port"] = self.api.port
+        self._send_json(200, payload)
 
     # ── Auth handlers ────────────────────────────────────────────────
 
@@ -348,6 +379,29 @@ class _RequestHandler(BaseHTTPRequestHandler):
         result = auth_login(email, password)
         if result is None:
             self._error(401, "invalid email or password")
+            return
+        self._send_json(200, result)
+
+    def _handle_auth_refresh(self) -> None:
+        """Exchange a Supabase refresh token for a fresh access token.
+
+        Unauthenticated by design: the client's access token has expired
+        at this point, and a refresh token alone grants only a new session
+        for the same user — it never grants device API rights by itself.
+        """
+        payload = self._read_json()
+        if payload is None:
+            return
+        refresh_token = (payload.get("refresh_token") or "").strip()
+        if not refresh_token:
+            self._error(400, "refresh_token is required")
+            return
+        if not supabase_configured():
+            self._error(501, "Supabase is not configured")
+            return
+        result = auth_refresh(refresh_token)
+        if result is None:
+            self._error(401, "invalid or expired refresh token")
             return
         self._send_json(200, result)
 
@@ -584,6 +638,9 @@ class _RequestHandler(BaseHTTPRequestHandler):
         if parsed.path == f"{API_PREFIX}/auth/login":
             self._handle_auth_login()
             return
+        if parsed.path == f"{API_PREFIX}/auth/refresh":
+            self._handle_auth_refresh()
+            return
         # ── Device endpoints (JWT required) ─────────────────────────
         if parsed.path == f"{API_PREFIX}/device/register":
             self._handle_device_register()
@@ -692,7 +749,8 @@ class MonitoringApi:
                  metadata_provider: MetadataProvider | None = None,
                  session_provider: MetadataProvider | None = None,
                  auth_token: str | None = None,
-                 pairing: PairingManager | None = None):
+                 pairing: PairingManager | None = None,
+                 pairing_store_path: str | None = None):
         if port < 0 or port > 65535:
             raise ValueError("port must be between 0 and 65535")
         if host == "0.0.0.0" and not auth_token:
@@ -706,7 +764,7 @@ class MonitoringApi:
         self.metadata_provider = metadata_provider
         self.session_provider = session_provider
         self.auth_token = auth_token
-        self.pairing = pairing or PairingManager()
+        self.pairing = pairing or PairingManager(store_path=pairing_store_path)
         self.instance_id = uuid.uuid4().hex
         self._running = threading.Event()
         handler = partial(_RequestHandler)

@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 
 import '../services/monitoring_client.dart';
 import '../theme.dart';
+import '../utils/safety_grading.dart';
 
 /// Screen for reviewing past trip analytics while idle.
 /// Fetches session history from the backend and displays summaries
@@ -45,8 +46,7 @@ class _TripLogScreenState extends State<TripLogScreen> {
       final startedAt = trip['started_at'] as double? ?? 0;
       final dt = DateTime.fromMillisecondsSinceEpoch(
           (startedAt * 1000).toInt());
-      final safetyScore =
-          (trip['safety_score'] as num?)?.toDouble() ?? 100;
+      final safetyScore = safetyScoreFrom(trip);
 
       if (_dateFrom != null && dt.isBefore(_dateFrom!)) return false;
       if (_dateTo != null) {
@@ -54,7 +54,13 @@ class _TripLogScreenState extends State<TripLogScreen> {
             DateTime(_dateTo!.year, _dateTo!.month, _dateTo!.day, 23, 59, 59);
         if (dt.isAfter(endOfDay)) return false;
       }
-      if (safetyScore < _minSafety || safetyScore > _maxSafety) return false;
+      // A missing score is unknown, not perfect: it fails any narrowed
+      // score filter instead of silently passing as an invented 100.
+      if (safetyScore == null) {
+        if (_minSafety > 0 || _maxSafety < 100) return false;
+      } else if (safetyScore < _minSafety || safetyScore > _maxSafety) {
+        return false;
+      }
       return true;
     }).toList();
   }
@@ -252,12 +258,15 @@ class _TripCard extends StatelessWidget {
     final durSec = (duration % 60).floor();
     final avgAttention = (trip['avg_attention'] as num?)?.toDouble() ?? 100;
     final alertCount = (trip['alert_count'] as num?)?.toInt() ?? 0;
-    final safetyScore = (trip['safety_score'] as num?)?.toDouble() ?? 100;
-    final scoreColor = safetyScore >= 80
-        ? AppColors.focusedGreen
-        : safetyScore >= 60
-            ? AppColors.alertAmber
-            : AppColors.alertRed;
+    final scoreValue = safetyScoreFrom(trip);
+    final scoreColor = scoreValue == null
+        ? AppColors.textMuted
+        : switch (gradeSafetyScore(scoreValue).band) {
+            SafetyBand.good => AppColors.focusedGreen,
+            SafetyBand.fair => AppColors.alertAmber,
+            SafetyBand.poor => AppColors.alertRed,
+          };
+    final scoreLabel = scoreValue == null ? '—/100' : '${scoreValue.round()}/100';
 
     return Material(
       color: Colors.transparent,
@@ -384,7 +393,7 @@ class _TripCard extends StatelessWidget {
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Text(
-                        '${safetyScore.toInt()}/100',
+                        scoreLabel,
                         style: TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w700,
@@ -452,15 +461,19 @@ class _TripDetailSheetState extends State<_TripDetailSheet> {
     final durSec = (duration % 60).floor();
     final avgAttention = (trip['avg_attention'] as num?)?.toDouble() ?? 100;
     final alertCount = (trip['alert_count'] as num?)?.toInt() ?? 0;
-    final safetyScore = (trip['safety_score'] as num?)?.toDouble() ?? 100;
+    final scoreValue = safetyScoreFrom(trip);
     final sessionId = trip['session_id'] as String? ?? 'unknown';
     final shortId =
         sessionId.length > 12 ? sessionId.substring(0, 12) : sessionId;
-    final scoreColor = safetyScore >= 80
-        ? AppColors.focusedGreen
-        : safetyScore >= 60
-            ? AppColors.alertAmber
-            : AppColors.alertRed;
+    final scoreColor = scoreValue == null
+        ? AppColors.textMuted
+        : switch (gradeSafetyScore(scoreValue).band) {
+            SafetyBand.good => AppColors.focusedGreen,
+            SafetyBand.fair => AppColors.alertAmber,
+            SafetyBand.poor => AppColors.alertRed,
+          };
+    final scoreLabel = scoreValue == null ? '—/100' : '${scoreValue.round()}/100';
+    final barProgress = scoreValue == null ? 0.0 : scoreValue / 100;
 
     return DraggableScrollableSheet(
       initialChildSize: 0.75,
@@ -560,7 +573,7 @@ class _TripDetailSheetState extends State<_TripDetailSheet> {
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(6),
                       child: LinearProgressIndicator(
-                        value: safetyScore / 100,
+                        value: barProgress,
                         minHeight: 12,
                         backgroundColor: AppColors.surface2,
                         color: scoreColor,
@@ -569,7 +582,7 @@ class _TripDetailSheetState extends State<_TripDetailSheet> {
                   ),
                   const SizedBox(width: 16),
                   Text(
-                    '${safetyScore.toInt()}/100',
+                    scoreLabel,
                     style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.w700,

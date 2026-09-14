@@ -20,3 +20,11 @@ def test_reactivates_immediately():
     latch.update(True, 0.1)
     latch.update(False, 3.0)          # released
     assert latch.update(True, 0.1)
+
+
+def test_reset_clears_active_latch():
+    latch = AlertLatch(clear_seconds=2.0)
+    latch.update(True, 0.1)
+    latch.update(False, 0.5)          # still held
+    latch.reset()
+    assert not latch.update(False, 0.1)   # released immediately after reset

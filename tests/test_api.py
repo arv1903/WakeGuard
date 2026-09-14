@@ -7,7 +7,8 @@ from urllib.request import Request, urlopen
 import numpy as np
 import pytest
 
-from yolo.api import MonitoringApi
+from yolo import api as api_module
+from yolo.api import MonitoringApi, _primary_lan_address
 from yolo.monitoring import MonitoringSnapshot, MonitoringStore
 from yolo.pairing import PairingManager
 
@@ -144,6 +145,104 @@ def test_error_responses_drain_request_body_before_closing():
             assert exc.value.code == 400
     finally:
         service.stop()
+
+
+def test_pairing_response_carries_routable_lan_address(monkeypatch):
+    """The QR scanner needs the desktop's LAN address — a loopback host in
+    the pairing QR makes the phone dial itself (errno 11)."""
+    monkeypatch.setattr(api_module, "_primary_lan_address",
+                        lambda: "192.168.1.10")
+    service = MonitoringApi(port=0)
+    service.start()
+    try:
+        base = f"http://127.0.0.1:{service.port}"
+        _, _, raw = _get(base, "/api/v1/pairing")
+        payload = json.loads(raw)
+        assert payload["lan_host"] == "192.168.1.10"
+        assert payload["lan_port"] == service.port
+    finally:
+        service.stop()
+
+
+def test_pairing_response_omits_lan_address_when_unresolvable(monkeypatch):
+    monkeypatch.setattr(api_module, "_primary_lan_address", lambda: None)
+    service = MonitoringApi(port=0)
+    service.start()
+    try:
+        base = f"http://127.0.0.1:{service.port}"
+        _, _, raw = _get(base, "/api/v1/pairing")
+        payload = json.loads(raw)
+        assert "lan_host" not in payload
+        assert "lan_port" not in payload
+    finally:
+        service.stop()
+
+
+def test_primary_lan_address_is_never_loopback():
+    addr = _primary_lan_address()
+    if addr is None:
+        pytest.skip("no non-loopback route available on this machine")
+    assert addr not in ("127.0.0.1", "0.0.0.0")
+
+
+def test_auth_refresh_returns_501_without_supabase(monkeypatch):
+    """The refresh route exists and degrades cleanly when Supabase is off."""
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    service = MonitoringApi(port=0)
+    service.start()
+    try:
+        base = f"http://127.0.0.1:{service.port}"
+        with pytest.raises(HTTPError) as exc:
+            _post(base, "/api/v1/auth/refresh", {"refresh_token": "abc"})
+        assert exc.value.code == 501
+    finally:
+        service.stop()
+
+
+def test_auth_refresh_requires_a_refresh_token(monkeypatch):
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    service = MonitoringApi(port=0)
+    service.start()
+    try:
+        base = f"http://127.0.0.1:{service.port}"
+        with pytest.raises(HTTPError) as exc:
+            _post(base, "/api/v1/auth/refresh", {})
+        assert exc.value.code == 400
+    finally:
+        service.stop()
+
+
+def test_pairing_tokens_survive_a_backend_restart(tmp_path):
+    """A phone must keep access after the desktop restarts — the exact
+    scenario that stranded it with 'NODE ERROR // CHECK UPLINK'."""
+    store = str(tmp_path / "pairing_tokens.json")
+
+    first = MonitoringApi(port=0, auth_token="master",
+                          pairing_store_path=store)
+    first.start()
+    base = f"http://127.0.0.1:{first.port}"
+    _, _, raw = _get(base, "/api/v1/pairing")
+    issued = _post(base, "/api/v1/pairing/exchange", {
+        "code": json.loads(raw)["code"],
+    })[1]
+    headers = {"Authorization": f"Bearer {issued['access_token']}"}
+    status, _, _ = _get(base, "/api/v1/status", headers=headers)
+    assert status == 200
+    first.stop()
+
+    second = MonitoringApi(port=first.port, auth_token="master",
+                           pairing_store_path=store)
+    second.start()
+    try:
+        base = f"http://127.0.0.1:{second.port}"
+        status, _, raw = _get(base, "/api/v1/status", headers=headers)
+        assert status == 200
+        assert json.loads(raw)["server_id"]  # genuinely a new instance
+        # The stored file never contains the raw secret.
+        with open(store, "r", encoding="utf-8") as fh:
+            assert issued["access_token"] not in fh.read()
+    finally:
+        second.stop()
 
 
 def test_pairing_exchange_is_rate_limited_after_failed_attempts():

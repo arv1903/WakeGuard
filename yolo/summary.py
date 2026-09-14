@@ -59,6 +59,8 @@ def _build_summary_from_file(log_path: str, session_id: str | None = None) -> di
         "avg_blinks_per_min": blink_avg,
         "alerts_by_type": dict(Counter(alerts)),
         "alert_times": alert_times,
+        "safety_score": round(compute_safety_score(
+            att_avg if att_avg is not None else 0.0, len(alerts)), 1),
     }
 
 
@@ -85,18 +87,26 @@ def _build_summary_from_db(db: Any, session_id: str) -> dict:
                     pass
             elif isinstance(raw, dict):
                 alerts_by_type = raw
+            att_avg = sess.get("avg_attention") or 0.0
+            alert_count = sess.get("alert_count") or 0
+            # Prefer the stored score; recompute only when missing so client
+            # and server can never diverge on the same session.
+            score = sess.get("safety_score")
+            if score is None:
+                score = round(compute_safety_score(att_avg, alert_count), 1)
             return {
                 "duration": sess.get("duration_s") or 0.0,
                 "trip_duration_s": sess.get("duration_s") or 0.0,
                 "attention_min": None,
                 "attention_avg": sess.get("avg_attention"),
-                "avg_attention": sess.get("avg_attention") or 0.0,
+                "avg_attention": att_avg,
                 "perclos_max": sess.get("avg_perclos"),
                 "max_perclos": sess.get("avg_perclos") or 0.0,
-                "alert_count": sess.get("alert_count") or 0,
+                "alert_count": alert_count,
                 "avg_blinks_per_min": 0.0,
                 "alerts_by_type": alerts_by_type,
                 "alert_times": [],
+                "safety_score": score,
             }
     except Exception:
         pass
@@ -150,7 +160,9 @@ def _build_summary_from_db(db: Any, session_id: str) -> dict:
         "alert_count": len(alert_rows),
         "avg_blinks_per_min": blink_avg,
         "alerts_by_type": dict(Counter(a["alert"] for a in alert_rows)),
-        "alert_times": [],
+        "alert_times": [a.get("ts", 0.0) for a in alert_rows],
+        "safety_score": round(compute_safety_score(
+            att_avg if att_avg is not None else 0.0, len(alert_rows)), 1),
     }
 
 

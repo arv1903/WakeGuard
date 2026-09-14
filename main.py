@@ -20,7 +20,8 @@ import numpy as np
 
 import yolo.telegram as telegram
 from yolo.alarm import SetAlarmMuted, UpdateAlarm
-from yolo.attention import AlertLatch, ComputeAttentionScore, UpdateTimer
+from yolo.attention import (AlertLatch, CapDeltaTime, ComputeAttentionScore,
+                             StartupCountdown, UpdateTimer)
 from yolo.config import (
     HeadDownPitch, HeadYawThreshold, HeadRollThreshold,
     HeadDownTime, HeadAwayTime, CombinedDrowsyTime,
@@ -38,7 +39,7 @@ from yolo.config import (
     BlinkRateAlertPerMin, BlinkRateAlertTime,
     ClearGraceSeconds,
     CalibrationDuration, CalibrationCountdown, ProfilePath,
-    SessionLogPath,
+    SessionLogPath, StartupCountdownSeconds,
 )
 from yolo.calibration import CalibrationProfile, CalibrationSession, RunCalibration
 from yolo.envfile import LoadEnvFile
@@ -48,7 +49,7 @@ from yolo.eyes import BlinkMonitor
 from yolo.hud import HudState, RenderHud
 from yolo.perclos import DrowsyEMA, PerclosTracker
 from yolo.detector import CreateDetectionModel, CreateFaceLandmarker
-from yolo.drawing import DrawAlertOverlay, DrawModernBox, DrawHeadAxes
+from yolo.drawing import DrawAlertOverlay, DrawHeadAxes, DrawYoloBoxes
 from yolo.pipeline import CameraThread, InferenceThread
 from yolo.stats import PerfStats
 from yolo.monitoring import (GetAlertSeverity, MonitoringSnapshot,
@@ -72,6 +73,7 @@ _CONFIG_NAMES = (
     "PerclosAlertTime PerclosWindowSeconds DrowsyEmaAlpha EyesClosedYoloConf "
     "EarClosedThreshold EarMinBlinkSeconds MicrosleepSeconds ClearGraceSeconds "
     "CalibrationDuration CalibrationCountdown ProfilePath SessionLogPath "
+    "StartupCountdownSeconds "
     "BlinkRateAlertPerMin BlinkRateAlertTime "
     "SessionLoggingEnabled NightMode"
 ).split()
@@ -106,6 +108,28 @@ def parse_args():
     ap.add_argument("--api-token", default=os.environ.get("DRIVER_API_TOKEN"),
                     help="Bearer token required for API access, especially on LAN.")
     return ap.parse_args()
+
+
+def _DrawStartupCountdown(Frame, Remaining):
+    """Overlay the 3-2-1 get-ready text on a display canvas (window only).
+
+    Drawn after the API frame is published so the streamed feed stays clean
+    and the Flutter client renders its own overlay.
+    """
+    h, w = Frame.shape[:2]
+    overlay = Frame.copy()
+    cv2.rectangle(overlay, (0, 0), (w, h), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.5, Frame, 0.5, 0, Frame)
+    number = str(max(1, math.ceil(Remaining)))
+    (nw, _nh), _ = cv2.getTextSize(number, cv2.FONT_HERSHEY_DUPLEX, 4.0, 5)
+    cv2.putText(Frame, number, ((w - nw) // 2, h // 2),
+                cv2.FONT_HERSHEY_DUPLEX, 4.0, (255, 255, 255), 5,
+                cv2.LINE_AA)
+    label = "GET READY"
+    (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_DUPLEX, 1.0, 2)
+    cv2.putText(Frame, label, ((w - lw) // 2, h // 2 + 60 + lh),
+                cv2.FONT_HERSHEY_DUPLEX, 1.0, (255, 255, 255), 2,
+                cv2.LINE_AA)
 
 
 def main():
@@ -234,11 +258,46 @@ def main():
     alarm_muted = False
     paused = False
     trip_active = False
+    # Wall-clock 3-2-1 grace timer: evaluation stays suspended until it ends,
+    # no matter how slowly the display loop ticks (see StartupCountdown).
+    startup_countdown = StartupCountdown(StartupCountdownSeconds)
     _idle_logged = False
     session_id = uuid.uuid4().hex
     trip_started_at = time.time()
     api_started_at = time.time()
     snapshot_sequence = 0
+
+    # Every alert accumulator, latch, and rolling window must start clean
+    # when a session begins; stale state from a previous trip is what can
+    # fire an alert on the very first frames (e.g. PERCLOS still full of the
+    # last trip's samples, or a microsleep latch that never cleared).
+    def _reset_monitors(*, start_session: bool = False):
+        nonlocal YoloDrowsyAcc, HeadDownAcc, HeadAwayAcc, CombinedAcc
+        nonlocal PerclosAcc, LowBlinkAcc
+        nonlocal SmoothedPitch, SmoothedYaw, SmoothedRoll, SmoothedAttention
+        nonlocal FaceLost, FaceLostAccumulated
+        nonlocal WasHeadDownBeforeLoss, WasDrowsyBeforeLoss, PrevFaceFound
+        nonlocal last_seen
+        YoloDrowsyAcc = HeadDownAcc = HeadAwayAcc = CombinedAcc = 0.0
+        PerclosAcc = LowBlinkAcc = 0.0
+        SmoothedPitch = SmoothedYaw = SmoothedRoll = 0.0
+        SmoothedAttention = 100.0
+        FaceLost = False
+        FaceLostAccumulated = 0.0
+        WasHeadDownBeforeLoss = WasDrowsyBeforeLoss = False
+        PrevFaceFound = False
+        attention_history.clear()
+        last_seen = None
+        ema_drowsy.reset()
+        perclos.reset()
+        blinks.reset()
+        for latch in latches.values():
+            latch.reset()
+        if start_session:
+            startup_countdown.configure(StartupCountdownSeconds)
+            startup_countdown.start()
+        else:
+            startup_countdown.reset()
     cal_session: CalibrationSession | None = None
     calibration_status = {
         "state": "idle",
@@ -320,6 +379,11 @@ def main():
             metadata_provider=api_metadata,
             session_provider=current_session,
             auth_token=args.api_token,
+            # Persist companion tokens so the phone keeps access across
+            # desktop restarts (digests only — secrets never stored).
+            pairing_store_path=os.path.join(
+                os.path.dirname(ProfilePath) or "profiles", "pairing_tokens.json"
+            ),
         )
         monitoring_api.start()
         print(f"Monitoring API listening on {args.api_host}:{monitoring_api.port}")
@@ -449,7 +513,8 @@ def main():
                         if _db_sync is not None:
                             _db_sync.bind_session(session_id, device_id=_device_id, user_id=_device_user_id)
                         _start_pipeline()
-                        blinks.reset()
+                        print(f"[session] starting in {StartupCountdownSeconds:g}s "
+                              "— keep your eyes open and face the camera")
                         # Run calibration on first session if needed (non-blocking)
                         if _needs_calibration:
                             cal_session = CalibrationSession(duration=CalibrationDuration)
@@ -458,6 +523,15 @@ def main():
                                 state="running", progress=0.0, error=None,
                                 valid_samples=0)
                             print("[session] started non-blocking neutral head pose calibration...")
+                    else:
+                        # Start pressed while a session is already active (e.g.
+                        # after an app restart) — re-arm a fresh countdown and
+                        # wipe stale accumulators instead of silently ignoring it,
+                        # so a new session never inherits the old one's state.
+                        print("[session] start requested while active — "
+                              "re-arming startup countdown")
+                    _start_pipeline()
+                    _reset_monitors(start_session=True)
                     trip_active = True
                     last_log_time = time.monotonic()
                 elif command == "stop_trip":
@@ -467,7 +541,7 @@ def main():
                             _db_sync.unbind_session()
                     trip_active = False
                     _stop_pipeline()
-                    blinks.reset()
+                    _reset_monitors()
                     # Publish idle snapshot so SSE clients detect session end.
                     snapshot_sequence += 1
                     monitoring_store.publish(MonitoringSnapshot(
@@ -558,16 +632,21 @@ def main():
                 continue
 
             Now = time.monotonic()
-            DeltaTime = Now - LastTime
+            # Cap the step so a stall (e.g. idle before a session's first
+            # frame) can never count as sustained condition time.
+            DeltaTime = CapDeltaTime(Now - LastTime)
             LastTime = Now
             Tick += 1
 
-            # Frame for display: resize + annotate on a copy.
+            # Frame for display: resize + annotate on a copy. YOLO boxes are
+            # expressed in the inference frame's pixels, so keep the resize
+            # factor to stay aligned on the displayed/streamed canvas.
             frame = result.frame
             h, w = frame.shape[:2]
+            box_scale = 1.0
             if w > FrameWidth:
-                scale = FrameWidth / w
-                frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
+                box_scale = FrameWidth / w
+                frame = cv2.resize(frame, (int(w * box_scale), int(h * box_scale)))
             annotated = frame.copy()
 
             # ── Paused: freeze evaluation, show the frame only ─────
@@ -587,6 +666,16 @@ def main():
                     elif key == ord("p"):
                         paused = False
                 continue
+
+            # ── Startup countdown ──────────────────────────────────
+            # Give the driver a 3-2-1 grace period to settle (and the camera
+            # auto-exposure to converge) before evaluation begins. Wall-clock
+            # based, so it always lasts exactly StartupCountdownSeconds no
+            # matter how slowly inference ticks. The feed stays live; no
+            # alert can fire while the countdown runs.
+            countdown_active = startup_countdown.active(Now)
+            countdown_remaining = (startup_countdown.remaining(Now)
+                                   if countdown_active else 0.0)
 
             hp = result.head_pose
             if cal_session is not None and cal_session.is_active:
@@ -620,38 +709,43 @@ def main():
                 SmoothedRoll = alpha * hp["roll"] + (1 - alpha) * SmoothedRoll
 
             # Draw YOLO boxes (same rendering as before).
-            for x1, y1, x2, y2, cls_id, conf in result.boxes:
-                label = f"{'Drowsy' if cls_id == 0 else 'Alert'} ({conf:.2f})"
-                color = (0, 0, 255) if cls_id == 0 else (0, 200, 0)
-                DrawModernBox(annotated, x1, y1, x2, y2, label, color)
+            DrawYoloBoxes(annotated, result.boxes, box_scale)
 
-            # ── Face-lost detection (same logic as original) ──────
+            # ── Face-lost detection ────────────────────────────────
+            # Frozen during the startup countdown: warm-up frames (camera
+            # still converging, driver settling) must never seed or advance
+            # the face-lost state machine, or a face lost during the grace
+            # period could fire "FACE LOST — POSSIBLE MICROSLEEP" the instant
+            # evaluation begins.
             FaceFound = result.face_found
-            JustLostFace = PrevFaceFound and not FaceFound
-            if JustLostFace:
-                FaceLost = True
-                FaceLostAccumulated = 0.0
-                WasHeadDownBeforeLoss = hp["valid"] and (SmoothedPitch - profile.neutral_pitch) < -HeadDownPitch
-                WasDrowsyBeforeLoss = result.max_drowsy > YoloDrowsyWeak
-            elif FaceFound:
-                FaceLost = False
-                FaceLostAccumulated = 0.0
-                WasHeadDownBeforeLoss = WasDrowsyBeforeLoss = False
-            PrevFaceFound = FaceFound
-
-            FaceLostAlert = False
-            if FaceLost:
-                FaceLostAccumulated += DeltaTime
-                if WasHeadDownBeforeLoss or WasDrowsyBeforeLoss:
-                    FaceLostAlert = FaceLostAccumulated >= FaceLostDrowsyTime
-                    face_lost_progress = FaceLostAccumulated / FaceLostDrowsyTime
-                else:
-                    FaceLostAlert = FaceLostAccumulated >= FaceLostCleanTime
-                    face_lost_progress = FaceLostAccumulated / FaceLostCleanTime
-            else:
+            if countdown_active:
                 face_lost_progress = 0.0
-            if FaceFound and not FaceLost:
-                last_seen = frame.copy()
+            else:
+                JustLostFace = PrevFaceFound and not FaceFound
+                if JustLostFace:
+                    FaceLost = True
+                    FaceLostAccumulated = 0.0
+                    WasHeadDownBeforeLoss = hp["valid"] and (SmoothedPitch - profile.neutral_pitch) < -HeadDownPitch
+                    WasDrowsyBeforeLoss = result.max_drowsy > YoloDrowsyWeak
+                elif FaceFound:
+                    FaceLost = False
+                    FaceLostAccumulated = 0.0
+                    WasHeadDownBeforeLoss = WasDrowsyBeforeLoss = False
+                PrevFaceFound = FaceFound
+
+                FaceLostAlert = False
+                if FaceLost:
+                    FaceLostAccumulated += DeltaTime
+                    if WasHeadDownBeforeLoss or WasDrowsyBeforeLoss:
+                        FaceLostAlert = FaceLostAccumulated >= FaceLostDrowsyTime
+                        face_lost_progress = FaceLostAccumulated / FaceLostDrowsyTime
+                    else:
+                        FaceLostAlert = FaceLostAccumulated >= FaceLostCleanTime
+                        face_lost_progress = FaceLostAccumulated / FaceLostCleanTime
+                else:
+                    face_lost_progress = 0.0
+                if FaceFound and not FaceLost:
+                    last_seen = frame.copy()
 
             # ── State evaluation (same logic as original) ─────────
             HeadDown = hp["valid"] and (SmoothedPitch - profile.neutral_pitch) < -HeadDownPitch
@@ -659,7 +753,9 @@ def main():
             HeadTilt = hp["valid"] and abs(SmoothedRoll - profile.neutral_roll) > HeadRollThreshold
             YoloDrowsy = result.max_drowsy > YoloDrowsyThreshold
             YoloWeak = result.max_drowsy > YoloDrowsyWeak
-            TimerFrozen = FaceLost
+            # Freeze every alert timer during the startup countdown (and
+            # while the face is lost).
+            TimerFrozen = FaceLost or countdown_active
 
             YoloDrowsyAcc, YoloAlert = UpdateTimer(
                 YoloDrowsy, YoloDrowsyAcc, DeltaTime, YoloDrowsyDuration, Freeze=TimerFrozen)
@@ -672,12 +768,14 @@ def main():
                 CombinedDrowsyTime, Freeze=TimerFrozen)
 
             # ── PERCLOS + EMA (fuses YOLO confidence and EAR) ──────
-            ema_now = ema_drowsy.update(result.max_drowsy)
+            ema_now = ema_drowsy.update(0.0 if countdown_active else result.max_drowsy)
             # EAR is only trusted when a face pose is valid — prevents
             # spurious eye-closed when half-occluded (ComputeEAR now returns
             # None, but guard with pose_valid for defense in depth).
-            eyes_closed = (ema_now > EyesClosedYoloConf
-                           or (hp["valid"] and result.ear is not None and result.ear < EarClosedThreshold))
+            eyes_closed = ((ema_now > EyesClosedYoloConf
+                            or (hp["valid"] and result.ear is not None
+                                and result.ear < EarClosedThreshold))
+                           and not countdown_active)
             perclos_now = perclos.update(eyes_closed)
             PerclosAcc, PerclosFired = UpdateTimer(
                 perclos_now > PerclosAlertThreshold, PerclosAcc, DeltaTime,
@@ -688,7 +786,10 @@ def main():
 
             # ── Microsleep (EAR-based) — most dangerous ────────────
             # Pass ear directly; BlinkMonitor treats None as eyes-open.
-            blink_state = blinks.update(result.ear, Now)
+            # During the countdown feed None so warm-up frames can never
+            # accumulate blink/microsleep state.
+            blink_state = blinks.update(
+                None if countdown_active else result.ear, Now)
             MicrosleepAlert = latches["microsleep"].update(
                 blink_state["microsleep"], 0.0 if TimerFrozen else DeltaTime)
             low_blink_condition = (
@@ -701,16 +802,21 @@ def main():
             LowBlinkAlert = latches["low_blink"].update(
                 LowBlinkFired, 0.0 if TimerFrozen else DeltaTime)
 
-            AlertMsg = SelectAlert(
-                AlertMessages,
-                microsleep=MicrosleepAlert,
-                combined=CombinedAlert or HeadDownAlert,
-                perclos=PerclosAlert,
-                face_lost=FaceLostAlert,
-                head_away=HeadAwayAlert,
-                low_blink=LowBlinkAlert,
-                yolo=YoloAlert,
-            )
+            if countdown_active:
+                # Never surface an alert (or trigger alarm/Telegram) while
+                # the driver is still settling into the session.
+                AlertMsg = None
+            else:
+                AlertMsg = SelectAlert(
+                    AlertMessages,
+                    microsleep=MicrosleepAlert,
+                    combined=CombinedAlert or HeadDownAlert,
+                    perclos=PerclosAlert,
+                    face_lost=FaceLostAlert,
+                    head_away=HeadAwayAlert,
+                    low_blink=LowBlinkAlert,
+                    yolo=YoloAlert,
+                )
 
             if AlertMsg:
                 DrawAlertOverlay(annotated, Tick, AlertMsg)
@@ -724,7 +830,9 @@ def main():
             # ── Attention (same as original) ──────────────────────
             rel_pitch = SmoothedPitch - profile.neutral_pitch
             rel_yaw = SmoothedYaw - profile.neutral_yaw
-            raw = ComputeAttentionScore(result.max_drowsy, rel_pitch, rel_yaw)
+            raw = ComputeAttentionScore(
+                0.0 if countdown_active else result.max_drowsy,
+                rel_pitch, rel_yaw)
             SmoothedAttention = AttentionSmoothAlpha * SmoothedAttention + (1 - AttentionSmoothAlpha) * raw
             IsFocused = (SmoothedAttention >= AttentionFocusedMin and not HeadDown
                          and not LookingAway and result.max_drowsy < YoloDrowsyWeak
@@ -765,13 +873,19 @@ def main():
                 alert_severity=GetAlertSeverity(AlertMsg),
                 alarm_muted=alarm_muted,
                 fps=draw_fps,
+                startup_countdown=countdown_remaining,
                 calibration_state=calibration_status["state"],
                 calibration_progress=calibration_status["progress"],
                 calibration_error=calibration_status["error"],
                 calibration_valid_samples=calibration_status["valid_samples"],
             ))
             if monitoring_api is not None:
-                monitoring_api.publish_frame(frame)
+                # Stream the already-annotated canvas (detection boxes + alert
+                # overlay) instead of the raw frame, so the desktop/mobile
+                # camera feed shows the same overlay the operator sees. This
+                # adds no inference work — only a few lines/labels before the
+                # JPEG encode that already happens every tick.
+                monitoring_api.publish_frame(annotated)
 
             # ── Session logging (alert transitions + 1 Hz samples) ──
             # Respect SessionLoggingEnabled — the Flutter toggle now actually works.
@@ -796,6 +910,8 @@ def main():
                     DrawHeadAxes(annotated, hp["rvec"], hp["tvec"], hp["nose_pt"])
                 draw_ms = DisplayStats.mean("draw")
                 draw_fps = 1000.0 / draw_ms if draw_ms > 0 else 0.0
+                if countdown_active:
+                    _DrawStartupCountdown(annotated, countdown_remaining)
                 annotated = RenderHud(annotated, HudState(
                         attention=SmoothedAttention,
                         perclos=perclos_now,

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../services/auth_service.dart';
@@ -67,8 +68,22 @@ class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
       vsync: this,
       duration: const Duration(seconds: 3),
     )..repeat();
-    _backendUrlController.text = 'http://127.0.0.1:8765';
+    // 127.0.0.1 is only meaningful when the app runs beside the backend
+    // (desktop). On a phone it means "dial yourself" — the exact mistake
+    // behind 'SocketConnection refused … errno 11' after scanning a QR.
+    _backendUrlController.text =
+        _isPhone ? '' : 'http://127.0.0.1:8765';
     _startAutoDiscovery();
+  }
+
+  static bool get _isPhone {
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.android:
+      case TargetPlatform.iOS:
+        return true;
+      default:
+        return false;
+    }
   }
 
   @override
@@ -95,6 +110,19 @@ class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
     final normalisedUrl = backendUrl.startsWith('http')
         ? backendUrl
         : 'http://$backendUrl';
+
+    // A phone can never reach a desktop via loopback — catch it here
+    // instead of letting the connection loop fail with a cryptic errno 11.
+    final parsedUrl = Uri.tryParse(normalisedUrl);
+    final isLoopback = parsedUrl != null &&
+        (parsedUrl.host == '127.0.0.1' || parsedUrl.host == 'localhost');
+    if (_isPhone && isLoopback) {
+      setState(() {
+        _error = "'127.0.0.1' is this phone itself. Scan the desktop's "
+            'pairing QR, or enter its LAN IP (e.g. 192.168.1.50:8765).';
+      });
+      return;
+    }
 
     setState(() { _isLoading = true; _error = null; });
 

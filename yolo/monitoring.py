@@ -11,7 +11,7 @@ import time
 from typing import Any
 
 
-SNAPSHOT_SCHEMA_VERSION = 2
+SNAPSHOT_SCHEMA_VERSION = 3
 
 _ALERT_SEVERITIES = {
     "MICROSLEEP": 4,
@@ -95,6 +95,7 @@ class MonitoringSnapshot:
     calibration_progress: float = 0.0
     calibration_error: str | None = None
     calibration_valid_samples: int = 0
+    startup_countdown: float = 0.0  # seconds remaining before evaluation starts
 
     def to_dict(self) -> dict[str, Any]:
         """Return the stable wire representation used by API clients."""

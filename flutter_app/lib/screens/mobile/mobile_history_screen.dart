@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../services/monitoring_client.dart';
 import '../../theme.dart';
+import '../../utils/safety_grading.dart';
 
 /// Mobile trip history screen matching the Stitch "History" mockup.
 ///
@@ -44,12 +45,6 @@ class _MobileHistoryScreenState extends State<MobileHistoryScreen> {
     if (value is num) return DateTime.fromMillisecondsSinceEpoch((value * 1000).toInt());
     if (value is String) return DateTime.tryParse(value);
     return null;
-  }
-
-  Color _scoreColor(double score) {
-    if (score >= 80) return Stitch.secondary;
-    if (score >= 50) return Stitch.tertiaryFixedDim;
-    return Stitch.error;
   }
 
   String _formatDuration(num? seconds) {
@@ -160,8 +155,10 @@ class _MobileHistoryScreenState extends State<MobileHistoryScreen> {
   }
 
   Widget _buildTripCard(Map<String, dynamic> trip) {
-    final score = (trip['safety_score'] as num?)?.toDouble() ?? 0;
-    final color = _scoreColor(score);
+    final scoreValue = safetyScoreFrom(trip);
+    final color = scoreValue == null
+        ? Stitch.onSurfaceVariant
+        : gradeSafetyScore(scoreValue).color;
     final duration = _formatDuration(trip['duration_s']);
     final dateShort = _formatDateShort(trip['started_at']);
     final timeRange = _formatTimeRange(trip['started_at'], trip['duration_s'] as num?);
@@ -174,7 +171,9 @@ class _MobileHistoryScreenState extends State<MobileHistoryScreen> {
         color: Stitch.surfaceLow,
         borderRadius: BorderRadius.circular(12),
         child: InkWell(
-          onTap: () {},
+          // All trip data is shown inline; tapping opens nothing yet, so the
+          // card is honestly static until a detail view exists.
+          onTap: null,
           borderRadius: BorderRadius.circular(12),
           child: Container(
             decoration: BoxDecoration(
@@ -287,7 +286,7 @@ class _MobileHistoryScreenState extends State<MobileHistoryScreen> {
                             crossAxisAlignment: CrossAxisAlignment.end,
                             children: [
                               Text(
-                                '${score.round()}',
+                                scoreValue?.round().toString() ?? '—',
                                 style: TextStyle(
                                   fontSize: 24,
                                   fontFamily: 'JetBrains Mono',
