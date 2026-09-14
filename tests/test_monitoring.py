@@ -21,6 +21,7 @@ def test_snapshot_is_json_safe_and_versioned():
         calibration_progress=0.75,
         calibration_error="No valid pose samples",
         calibration_valid_samples=0,
+        startup_countdown=2.5,
     )
 
     payload = snapshot.to_dict()
@@ -30,7 +31,8 @@ def test_snapshot_is_json_safe_and_versioned():
     assert payload["trip_active"] is True
     assert payload["ear"] == 0.18
     assert payload["alert_severity"] == 4
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
+    assert payload["startup_countdown"] == 2.5
     assert payload["calibration_state"] == "failed"
     assert payload["calibration_progress"] == 0.75
     assert payload["calibration_error"] == "No valid pose samples"

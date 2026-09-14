@@ -26,6 +26,7 @@ class _PairingQrDialogState extends State<PairingQrDialog> {
   PairingQrPayload? _payload;
   DateTime? _expiresAt;
   bool _failed = false;
+  bool _loopbackOnly = false;
   Timer? _ticker;
 
   @override
@@ -43,11 +44,21 @@ class _PairingQrDialogState extends State<PairingQrDialog> {
   Future<void> _load() async {
     try {
       final data = await widget.client.fetchPairing();
-      final uri = Uri.tryParse(widget.client.baseUrl);
-      final host = uri?.host ?? '';
       if (!mounted) return;
+      // Prefer the backend's own routable LAN address. The client baseUrl is
+      // only a fallback — and 127.0.0.1 is never usable: a QR embedding it
+      // makes the phone dial itself (SocketException, errno 11).
+      final lanHost = (data['lan_host'] as String?)?.trim() ?? '';
+      final lanPort = data['lan_port'] is int ? data['lan_port'] as int : null;
+      final uri = Uri.tryParse(widget.client.baseUrl);
+      final fallbackHost = uri?.host ?? '';
+      final host = lanHost.isNotEmpty && lanHost != '127.0.0.1'
+          ? lanHost
+          : (fallbackHost != '127.0.0.1' && fallbackHost != 'localhost'
+              ? fallbackHost
+              : '');
       if (host.isEmpty) {
-        setState(() { _failed = true; });
+        setState(() { _failed = true; _loopbackOnly = true; });
         return;
       }
       final expiresAt = data['expires_at'];
@@ -55,17 +66,18 @@ class _PairingQrDialogState extends State<PairingQrDialog> {
         _payload = PairingQrPayload(
           code: (data['code'] as String? ?? '').trim(),
           host: host,
-          port: (uri?.port != 0 ? uri?.port : null) ?? 8765,
+          port: lanPort ?? (uri?.port != 0 ? uri?.port : null) ?? 8765,
         );
         _expiresAt = expiresAt is num
             ? DateTime.fromMillisecondsSinceEpoch((expiresAt * 1000).toInt())
             : null;
         _failed = false;
+        _loopbackOnly = false;
       });
       _startTicker();
     } catch (_) {
       if (!mounted) return;
-      setState(() { _failed = true; _payload = null; });
+      setState(() { _failed = true; _payload = null; _loopbackOnly = false; });
     }
   }
 
@@ -103,7 +115,10 @@ class _PairingQrDialogState extends State<PairingQrDialog> {
         key: const Key('pairing-qr-dialog'),
         constraints: const BoxConstraints(maxWidth: 360),
         padding: const EdgeInsets.all(24),
-        child: Column(
+        // Scrollable: small windows must never clip the QR or the retry
+        // button — an unreachable control is worse than a cramped dialog.
+        child: SingleChildScrollView(
+          child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -141,6 +156,7 @@ class _PairingQrDialogState extends State<PairingQrDialog> {
             else
               _buildQr(),
           ],
+          ),
         ),
       ),
     );
@@ -166,6 +182,19 @@ class _PairingQrDialogState extends State<PairingQrDialog> {
       ),
       const SizedBox(height: 16),
       Text(
+        'PHONE CONNECTS TO',
+        style: AppTextStyles.labelSm
+            .copyWith(color: AppColors.textSecondary),
+      ),
+      const SizedBox(height: 2),
+      Text(
+        _payload!.url,
+        key: const Key('pairing-target'),
+        style: AppTextStyles.mono.copyWith(
+            fontSize: 13, fontWeight: FontWeight.w600),
+      ),
+      const SizedBox(height: 12),
+      Text(
         _payload!.code,
         key: const Key('pairing-code'),
         style: AppTextStyles.mono.copyWith(
@@ -190,10 +219,16 @@ class _PairingQrDialogState extends State<PairingQrDialog> {
     return Column(children: [
       const Icon(Icons.wifi_off, size: 32, color: AppColors.offlineYellow),
       const SizedBox(height: 12),
-      Text('Could not reach the backend to generate a pairing code.',
-          textAlign: TextAlign.center,
-          style: AppTextStyles.bodySm
-              .copyWith(color: AppColors.textSecondary)),
+      Text(
+        _loopbackOnly
+            ? 'No LAN address found. Connect this PC to a network '
+                '(Wi-Fi or Ethernet) with the phone on the same network, '
+                'then retry.'
+            : 'Could not reach the backend to generate a pairing code.',
+        textAlign: TextAlign.center,
+        style: AppTextStyles.bodySm
+            .copyWith(color: AppColors.textSecondary),
+      ),
       const SizedBox(height: 16),
       OutlinedButton(
         key: const Key('pairing-retry'),
@@ -203,3 +238,4 @@ class _PairingQrDialogState extends State<PairingQrDialog> {
     ]);
   }
 }
+

@@ -3,19 +3,18 @@ import 'package:flutter/material.dart';
 import '../../models/monitoring_snapshot.dart';
 import '../../services/monitoring_client.dart';
 import '../../theme.dart';
+import '../../utils/gauge_math.dart';
+import '../../utils/safety_grading.dart';
+import '../../widgets/mjpeg_view.dart';
 
 /// Mobile-optimised live monitoring screen matching the Stitch mockup.
 ///
-/// Shows circular SVG gauge, head pose vectors, session stats, and stop button.
+/// Shows the live camera feed, circular attention gauge, head pose vectors,
+/// session stats, and stop button.
 class MobileLiveMonitorScreen extends StatefulWidget {
-  const MobileLiveMonitorScreen({
-    super.key,
-    required this.client,
-    this.sessionStartTime,
-  });
+  const MobileLiveMonitorScreen({super.key, required this.client});
 
   final MonitoringClient client;
-  final DateTime? sessionStartTime;
 
   @override
   State<MobileLiveMonitorScreen> createState() =>
@@ -23,6 +22,8 @@ class MobileLiveMonitorScreen extends StatefulWidget {
 }
 
 class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
+  bool _stopping = false;
+
   @override
   void initState() {
     super.initState();
@@ -39,10 +40,15 @@ class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
     if (mounted) setState(() {});
   }
 
-  String _formatDuration() {
-    final start = widget.sessionStartTime;
-    if (start == null) return '00:00:00';
+  /// Elapsed session time from the live snapshot's tripStartedAt (unix
+  /// seconds), interpreted the same way as the desktop's trip timer.
+  String _formatDuration(MonitoringSnapshot snap) {
+    final started = snap.tripStartedAt;
+    if (started == null || started <= 0) return '00:00:00';
+    final start =
+        DateTime.fromMillisecondsSinceEpoch((started * 1000).toInt());
     final diff = DateTime.now().difference(start);
+    if (diff.isNegative) return '00:00:00';
     final h = diff.inHours.toString().padLeft(2, '0');
     final m = (diff.inMinutes % 60).toString().padLeft(2, '0');
     final s = (diff.inSeconds % 60).toString().padLeft(2, '0');
@@ -207,6 +213,9 @@ class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
             // Status banner
             _buildStatusBanner(snap),
             const SizedBox(height: 16),
+            // Live camera feed
+            _buildCameraFeed(snap),
+            const SizedBox(height: 16),
             // Main attention gauge
             _buildAttentionGauge(snap),
             const SizedBox(height: 16),
@@ -214,7 +223,7 @@ class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
             _buildHeadPoseSection(snap),
             const SizedBox(height: 16),
             // Session stats grid
-            _buildSessionStats(),
+            _buildSessionStats(snap),
             const SizedBox(height: 16),
             // Stop button
             _buildStopButton(),
@@ -231,12 +240,10 @@ class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
     Color color;
     String label;
 
-    if (sev >= 4) {
+    if (sev >= 3) {
+      // Severity 3+ means the alarm is sounding — same red as the grade.
       color = Stitch.error;
       label = snap.alert ?? 'CRITICAL';
-    } else if (sev >= 3) {
-      color = Stitch.tertiary;
-      label = snap.alert ?? 'DROWSY';
     } else if (sev >= 2) {
       color = Stitch.tertiaryFixedDim;
       label = snap.alert ?? 'DISTRACTED';
@@ -291,19 +298,59 @@ class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
     );
   }
 
+  // ── Live Camera Feed ─────────────────────────────────────────────────────
+
+  Widget _buildCameraFeed(MonitoringSnapshot snap) {
+    return Container(
+      width: double.infinity,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: Stitch.surfaceLow,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.3),
+            blurRadius: 16,
+          ),
+        ],
+      ),
+      child: AspectRatio(
+        aspectRatio: 16 / 10,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            MjpegView(client: widget.client),
+            Positioned(
+              left: 12,
+              top: 12,
+              child: _FeedBadge(
+                icon: snap.faceFound ? Icons.person : Icons.person_off,
+                label: snap.faceFound ? 'DRIVER DETECTED' : 'NO FACE',
+                color: snap.faceFound ? Stitch.secondary : Stitch.tertiaryFixedDim,
+              ),
+            ),
+            Positioned(
+              right: 12,
+              top: 12,
+              child: _FeedBadge(
+                icon: Icons.circle,
+                label: 'LIVE',
+                color: Stitch.error,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   // ── Attention Gauge (SVG-style) ──────────────────────────────────────────
 
   Widget _buildAttentionGauge(MonitoringSnapshot snap) {
     final score = snap.attention.round();
     final progress = snap.attention / 100;
-    Color scoreColor;
-    if (score >= 70) {
-      scoreColor = Stitch.secondary;
-    } else if (score >= 40) {
-      scoreColor = Stitch.tertiaryFixedDim;
-    } else {
-      scoreColor = Stitch.error;
-    }
+    // Same 80/60 band colors as the post-trip grade — one color language.
+    final scoreColor = gradeSafetyScore(snap.attention).color;
 
     return Container(
       width: double.infinity,
@@ -451,13 +498,13 @@ class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
 
   // ── Session Stats Grid ───────────────────────────────────────────────────
 
-  Widget _buildSessionStats() {
+  Widget _buildSessionStats(MonitoringSnapshot snap) {
     return Row(
       children: [
         Expanded(
           child: _StatBlock(
             label: 'SESSION T+',
-            value: _formatDuration(),
+            value: _formatDuration(snap),
             showCursor: true,
           ),
         ),
@@ -465,8 +512,7 @@ class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
         Expanded(
           child: _StatBlock(
             label: 'SENSOR FPS',
-            value: '30.0',
-            badge: 'LOCK',
+            value: snap.fps.toStringAsFixed(1),
           ),
         ),
       ],
@@ -480,9 +526,24 @@ class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
       width: double.infinity,
       height: 56,
       child: ElevatedButton(
-        onPressed: () {
-          widget.client.sendCommand('stop_trip');
-        },
+        onPressed: _stopping
+            ? null
+            : () async {
+                setState(() => _stopping = true);
+                try {
+                  await widget.client.sendCommand('/api/v1/session/stop');
+                } catch (e) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Stop failed: $e'),
+                        backgroundColor: Stitch.error,
+                      ),
+                    );
+                  }
+                }
+                if (mounted) setState(() => _stopping = false);
+              },
         style: ElevatedButton.styleFrom(
           backgroundColor: Stitch.error,
           foregroundColor: Stitch.onError,
@@ -492,22 +553,29 @@ class _MobileLiveMonitorScreenState extends State<MobileLiveMonitorScreen> {
           elevation: 4,
           shadowColor: Stitch.error.withValues(alpha: 0.3),
         ),
-        child: const Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.stop_circle, size: 20),
-            SizedBox(width: 8),
-            Text(
-              'STOP SESSION',
-              style: TextStyle(
-                fontSize: 12,
-                fontFamily: 'JetBrains Mono',
-                fontWeight: FontWeight.w700,
-                letterSpacing: 1.5,
+        child: _stopping
+            ? const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: Stitch.onError),
+              )
+            : const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.stop_circle, size: 20),
+                  SizedBox(width: 8),
+                  Text(
+                    'STOP SESSION',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontFamily: 'JetBrains Mono',
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                ],
               ),
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -568,17 +636,19 @@ class _GaugePainter extends CustomPainter {
       ..strokeCap = StrokeCap.butt
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8);
 
-    final sweepAngle = progress * 3.14159 * 2 - 3.14159 / 2;
+    // Full-circle sweep from 12 o'clock; clamped so the arc can never
+    // over-draw (the old formula shifted every value by a quarter turn).
+    final sweepAngle = gaugeSweepRadians(progress);
     canvas.drawArc(
       Rect.fromCircle(center: center, radius: radius),
-      -3.14159 / 2,
+      gaugeStartAngle,
       sweepAngle,
       false,
       glowPaint,
     );
     canvas.drawArc(
       Rect.fromCircle(center: center, radius: radius),
-      -3.14159 / 2,
+      gaugeStartAngle,
       sweepAngle,
       false,
       fillPaint,
@@ -673,13 +743,11 @@ class _StatBlock extends StatelessWidget {
     required this.label,
     required this.value,
     this.showCursor = false,
-    this.badge,
   });
 
   final String label;
   final String value;
   final bool showCursor;
-  final String? badge;
 
   @override
   Widget build(BuildContext context) {
@@ -724,20 +792,47 @@ class _StatBlock extends StatelessWidget {
                     color: Stitch.onSurfaceVariant.withValues(alpha: 0.5),
                   ),
                 ),
-              if (badge != null) ...[
-                const SizedBox(width: 8),
-                Text(
-                  badge!,
-                  style: const TextStyle(
-                    fontSize: 10,
-                    fontFamily: 'JetBrains Mono',
-                    fontWeight: FontWeight.w700,
-                    color: Stitch.secondary,
-                    letterSpacing: 1,
-                  ),
-                ),
-              ],
             ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FeedBadge extends StatelessWidget {
+  const _FeedBadge({
+    required this.icon,
+    required this.label,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 10,
+              fontFamily: 'JetBrains Mono',
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1,
+              color: color,
+            ),
           ),
         ],
       ),

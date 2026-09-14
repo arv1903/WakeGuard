@@ -129,6 +129,9 @@ CalibrationDuration = 4.0      # seconds of neutral-pose sampling
 CalibrationCountdown = 3.0     # seconds of on-screen countdown before sampling
 ProfilePath = "profiles/driver.json"
 
+# ── Session Startup ────────────────────────────────
+StartupCountdownSeconds = 3.0  # 3-2-1 grace after start before evaluation begins (0 disables)
+
 # ── MediaPipe Face Landmark Indices ────────────────
 # Nose tip, chin, left-eye outer, right-eye outer,
 # left-mouth corner, right-mouth corner

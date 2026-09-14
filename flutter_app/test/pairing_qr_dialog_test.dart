@@ -16,6 +16,8 @@ class _StubClient extends MonitoringClient {
         'code': 'AB12CD34',
         'expires_at': DateTime.now().millisecondsSinceEpoch / 1000 + 120,
         'pairing_uri': 'driver-monitor://pair?code=AB12CD34',
+        'lan_host': '192.168.1.10',
+        'lan_port': 8765,
       };
 
   @override
@@ -27,6 +29,9 @@ class _StubClient extends MonitoringClient {
 }
 
 Future<void> _pumpDialog(WidgetTester tester, _StubClient client) async {
+  // Taller surface: the dialog's QR + labels + buttons must all be hit-testable.
+  await tester.binding.setSurfaceSize(const Size(800, 1100));
+  addTearDown(() => tester.binding.setSurfaceSize(null));
   await tester.pumpWidget(MaterialApp(
     home: Scaffold(body: PairingQrDialog(client: client)),
   ));
@@ -43,11 +48,40 @@ void main() {
     expect(find.byType(QrImageView), findsOneWidget);
   });
 
+  testWidgets('QR embeds the backend LAN address, never the client baseUrl',
+      (tester) async {
+    // The desktop client often runs against 127.0.0.1; embedding that in
+    // the QR makes the phone dial itself (errno 11).
+    final client = _StubClient();
+    await _pumpDialog(tester, client);
+
+    // The dialog displays the address the phone will dial, so the operator
+    // can sanity-check it before scanning.
+    expect(find.text('http://192.168.1.10:8765'), findsOneWidget);
+    expect(find.text('127.0.0.1:8765'), findsNothing);
+  });
+
+  testWidgets('loopback-only setup shows LAN guidance instead of a QR',
+      (tester) async {
+    final client = _StubClient();
+    client.pairingResponse = () => {
+          'code': 'AB12CD34',
+          'expires_at': DateTime.now().millisecondsSinceEpoch / 1000 + 120,
+        };
+    await _pumpDialog(tester, client);
+
+    expect(find.byType(QrImageView), findsNothing);
+    expect(find.textContaining('No LAN address found'), findsOneWidget);
+    expect(find.text('RETRY'), findsOneWidget);
+  });
+
   testWidgets('shows a countdown derived from expires_at', (tester) async {
     final client = _StubClient();
     client.pairingResponse = () => {
           'code': 'AB12CD34',
           'expires_at': DateTime.now().millisecondsSinceEpoch / 1000 + 60,
+          'lan_host': '192.168.1.10',
+          'lan_port': 8765,
         };
     await _pumpDialog(tester, client);
 
@@ -57,7 +91,11 @@ void main() {
   testWidgets('omits the countdown when the backend gives no expiry',
       (tester) async {
     final client = _StubClient();
-    client.pairingResponse = () => {'code': 'AB12CD34'};
+    client.pairingResponse = () => {
+          'code': 'AB12CD34',
+          'lan_host': '192.168.1.10',
+          'lan_port': 8765,
+        };
     await _pumpDialog(tester, client);
 
     expect(find.text('AB12CD34'), findsOneWidget);

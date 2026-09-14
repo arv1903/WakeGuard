@@ -1,13 +1,11 @@
-import 'dart:async';
 import 'dart:math' as math;
-import 'dart:typed_data';
-import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
 import '../models/monitoring_snapshot.dart';
 import '../services/monitoring_client.dart';
 import '../theme.dart';
+import '../widgets/mjpeg_view.dart';
 
 class LiveMonitorScreen extends StatefulWidget {
   const LiveMonitorScreen(
@@ -195,7 +193,10 @@ class _FullscreenHud extends StatelessWidget {
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        Positioned.fill(child: _MjpegView(client: client)),
+        Positioned.fill(child: MjpegView(client: client)),
+        if (snap.startupCountdown > 0)
+          Positioned.fill(
+              child: StartupCountdownOverlay(countdown: snap.startupCountdown)),
         Positioned(
             top: 16,
             left: 16,
@@ -443,7 +444,7 @@ class _VideoSection extends StatelessWidget {
             child: Stack(
               fit: StackFit.expand,
               children: [
-                _MjpegView(client: client),
+                MjpegView(client: client),
                 Positioned(
                     left: 12,
                     top: 12,
@@ -467,6 +468,10 @@ class _VideoSection extends StatelessWidget {
                         icon: Icons.access_time,
                         label: 'IR-DMS',
                         color: Colors.white54)),
+                if (snap.startupCountdown > 0)
+                  Positioned.fill(
+                      child: StartupCountdownOverlay(
+                          countdown: snap.startupCountdown)),
               ],
             ),
           ),
@@ -963,181 +968,50 @@ class _Badge extends StatelessWidget {
   }
 }
 
-class _GridPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.03)
-      ..strokeWidth = 1;
-    const step = 40.0;
-    for (double x = 0; x < size.width; x += step)
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
-    for (double y = 0; y < size.height; y += step)
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
-}
-
-// ─── MJPEG View ────────────────────────────────────────────────────────────
-
-class _MjpegView extends StatefulWidget {
-  const _MjpegView({required this.client});
-  final MonitoringClient client;
-  @override
-  State<_MjpegView> createState() => _MjpegViewState();
-}
-
-class _MjpegViewState extends State<_MjpegView> {
-  ui.Image? _frame;
-  bool _decoding = false;
-  Uint8List? _pendingBytes;
-  DateTime _lastDecodeTime = DateTime.fromMillisecondsSinceEpoch(0);
-
-  // Minimum interval between decodes to prevent CPU thrashing
-  static const _minDecodeInterval = Duration(milliseconds: 30);
-
-  @override
-  void initState() {
-    super.initState();
-    widget.client.latestFrameBytes.addListener(_onFrame);
-    final existing = widget.client.latestFrameBytes.value;
-    if (existing != null) _onFrame();
-  }
-
-  @override
-  void didUpdateWidget(_MjpegView old) {
-    super.didUpdateWidget(old);
-    if (old.client != widget.client) {
-      old.client.latestFrameBytes.removeListener(_onFrame);
-      widget.client.latestFrameBytes.addListener(_onFrame);
-    }
-  }
-
-  @override
-  void dispose() {
-    _pendingTimer?.cancel();
-    _pendingTimer = null;
-    widget.client.latestFrameBytes.removeListener(_onFrame);
-    _frame?.dispose();
-    _decoding = false;
-    super.dispose();
-  }
-
-  void _onFrame() {
-    final bytes = widget.client.latestFrameBytes.value;
-    if (bytes == null) return;
-    if (_decoding) {
-      // A decode is in progress — keep only the latest frame, discard stale ones
-      _pendingBytes = bytes;
-      return;
-    }
-    final now = DateTime.now();
-    if (now.difference(_lastDecodeTime) < _minDecodeInterval &&
-        _frame != null) {
-      // Too soon after last decode and we already have a frame — queue it
-      _pendingBytes = bytes;
-      _schedulePendingDecode();
-      return;
-    }
-    _decode(bytes);
-  }
-
-  Timer? _pendingTimer;
-  void _schedulePendingDecode() {
-    if (_pendingTimer != null) return;
-    _pendingTimer = Timer(_minDecodeInterval, () {
-      _pendingTimer = null;
-      if (!mounted) return;
-      final pending = _pendingBytes;
-      if (pending != null && !_decoding) {
-        _pendingBytes = null;
-        _decode(pending);
-      }
-    });
-  }
-
-  void _decode(Uint8List bytes) {
-    _decoding = true;
-    _lastDecodeTime = DateTime.now();
-    ui.instantiateImageCodec(bytes).then((codec) {
-      if (!mounted || !_decoding) {
-        codec.dispose();
-        return;
-      }
-      codec.getNextFrame().then((info) {
-        if (!mounted || !_decoding) {
-          info.image.dispose();
-          codec.dispose();
-          return;
-        }
-        codec.dispose();
-        final oldFrame = _frame;
-        _frame = info.image;
-        _decoding = false;
-        setState(() {});
-        oldFrame?.dispose();
-        // If new frames arrived while we were decoding, process the latest
-        final pending = _pendingBytes;
-        if (pending != null) {
-          _pendingBytes = null;
-          _decode(pending);
-        }
-      });
-    }).catchError((_) {
-      _decoding = false;
-    });
-  }
+/// Full-canvas 3-2-1 countdown shown over the camera feed while the backend
+/// holds evaluation during the startup grace period.
+class StartupCountdownOverlay extends StatelessWidget {
+  const StartupCountdownOverlay({super.key, required this.countdown});
+  final double countdown;
 
   @override
   Widget build(BuildContext context) {
-    final frame = _frame;
-    if (frame == null) {
-      return ColoredBox(
-          color: AppColors.surface0, child: const _CameraLoadingPlaceholder());
-    }
-    return RawImage(
-        image: frame, fit: BoxFit.cover, filterQuality: FilterQuality.medium);
-  }
-}
-
-// ─── Camera Loading Placeholder with Scanning Animation ────────────────────
-
-class _CameraLoadingPlaceholder extends StatelessWidget {
-  const _CameraLoadingPlaceholder();
-
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      alignment: Alignment.center,
-      children: [
-        CustomPaint(size: Size.infinite, painter: _GridPainter()),
-        Column(mainAxisSize: MainAxisSize.min, children: [
-          Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                  color: AppColors.surface2,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: const Color(0x33444748))),
-              child: const Icon(Icons.videocam_outlined,
-                  size: 24, color: AppColors.textMuted)),
-          const SizedBox(height: 12),
-          const Text('Connecting to camera...',
-              style: TextStyle(
-                  color: AppColors.textSecondary,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500)),
-          const SizedBox(height: 6),
-          SizedBox(
-              width: 120,
-              child: LinearProgressIndicator(
-                  backgroundColor: AppColors.surface2,
-                  color: AppColors.focusedGreen.withValues(alpha: 0.5),
-                  minHeight: 2)),
-        ]),
-      ],
+    final seconds = countdown.ceil().clamp(1, 9).toInt();
+    return ColoredBox(
+      color: Colors.black.withValues(alpha: 0.55),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('GET READY',
+                style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 4,
+                    color: Colors.white70)),
+            const SizedBox(height: 12),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 300),
+              transitionBuilder: (child, animation) => FadeTransition(
+                  opacity: animation,
+                  child: ScaleTransition(scale: animation, child: child)),
+              child: Text(
+                '$seconds',
+                key: ValueKey<int>(seconds),
+                style: const TextStyle(
+                    fontSize: 96,
+                    fontWeight: FontWeight.w800,
+                    fontFamily: 'monospace',
+                    color: Colors.white,
+                    height: 1.0),
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text('Keep your eyes open and face the camera',
+                style: TextStyle(fontSize: 12, color: Colors.white60)),
+          ],
+        ),
+      ),
     );
   }
 }

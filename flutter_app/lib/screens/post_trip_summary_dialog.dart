@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../theme.dart';
+import '../utils/safety_grading.dart';
 
 class PostTripSummaryDialog extends StatelessWidget {
   const PostTripSummaryDialog({super.key, required this.summary});
@@ -24,13 +25,18 @@ class PostTripSummaryDialog extends StatelessWidget {
     final durMin = (tripDuration / 60).floor();
     final durSec = (tripDuration % 60).floor();
 
-    final safetyScore =
-        ((avgAttention * 1.0 - alertCount * 3).clamp(0, 100)).toDouble();
-    final scoreColor = safetyScore >= 80
-        ? AppColors.focusedGreen
-        : safetyScore >= 60
-            ? AppColors.alertAmber
-            : AppColors.alertRed;
+    // Backend is authoritative for the score. When it's absent we render an
+    // explicit placeholder instead of inventing one client-side.
+    final grade = safetyScoreFrom(summary) == null
+        ? null
+        : gradeSafetyScore(safetyScoreFrom(summary)!);
+    final scoreColor = grade == null
+        ? AppColors.textMuted
+        : switch (grade.band) {
+            SafetyBand.good => AppColors.focusedGreen,
+            SafetyBand.fair => AppColors.alertAmber,
+            SafetyBand.poor => AppColors.alertRed,
+          };
 
     return Dialog(
       backgroundColor: AppColors.surface1,
@@ -71,8 +77,8 @@ class PostTripSummaryDialog extends StatelessWidget {
               const Divider(color: AppColors.textMuted, height: 1),
               const SizedBox(height: 24),
               Center(
-                  child:
-                      _SafetyScoreGauge(score: safetyScore, color: scoreColor)),
+                  child: _SafetyScoreGauge(
+                      score: grade?.score, color: scoreColor)),
               const SizedBox(height: 24),
               _metricsGrid(durMin, durSec, avgAttention, maxPerclos, alertCount,
                   blinkRate),
@@ -192,6 +198,7 @@ class PostTripSummaryDialog extends StatelessWidget {
       'Max PERCLOS,$maxPerclos',
       'Alert Count,$alertCount',
       'Avg Blinks/min,$blinkRate',
+      'Safety Score,${summary['safety_score'] ?? 'n/a'}',
     ];
     final csv = rows.join('\n');
     Clipboard.setData(ClipboardData(text: csv));
@@ -207,7 +214,7 @@ class PostTripSummaryDialog extends StatelessWidget {
 
 class _SafetyScoreGauge extends StatelessWidget {
   const _SafetyScoreGauge({required this.score, required this.color});
-  final double score;
+  final double? score;
   final Color color;
 
   @override
@@ -219,7 +226,7 @@ class _SafetyScoreGauge extends StatelessWidget {
         painter: _ScorePainter(score: score, color: color),
         child: Center(
           child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Text('${score.toInt()}',
+            Text(score == null ? '—' : '${score!.round()}',
                 style: TextStyle(
                     fontSize: 32,
                     fontWeight: FontWeight.w700,
@@ -240,7 +247,7 @@ class _SafetyScoreGauge extends StatelessWidget {
 
 class _ScorePainter extends CustomPainter {
   _ScorePainter({required this.score, required this.color});
-  final double score;
+  final double? score;
   final Color color;
 
   @override
@@ -256,7 +263,7 @@ class _ScorePainter extends CustomPainter {
           ..style = PaintingStyle.stroke
           ..strokeWidth = 6);
     final maxSweep = 1.5 * math.pi;
-    final sweep = maxSweep * (score / 100);
+    final sweep = maxSweep * ((score ?? 0) / 100);
     canvas.drawArc(
         rect,
         -3 * math.pi / 4,

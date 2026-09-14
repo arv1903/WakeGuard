@@ -53,11 +53,12 @@ void main() {
 
   group('BackendConnectionState', () {
     test('has all expected states', () {
-      expect(BackendConnectionState.values.length, 4);
+      expect(BackendConnectionState.values.length, 5);
       expect(BackendConnectionState.disconnected, isNotNull);
       expect(BackendConnectionState.connecting, isNotNull);
       expect(BackendConnectionState.connected, isNotNull);
       expect(BackendConnectionState.error, isNotNull);
+      expect(BackendConnectionState.authRejected, isNotNull);
     });
   });
 }

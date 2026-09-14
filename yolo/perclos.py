@@ -14,6 +14,10 @@ class DrowsyEMA:
         self._value = self._alpha * self._value + (1.0 - self._alpha) * drowsy_conf
         return self._value
 
+    def reset(self) -> None:
+        """Forget past history (called when a new session/trip starts)."""
+        self._value = 0.0
+
 
 class PerclosTracker:
     """Fraction of samples in a rolling window where the eyes were closed.
@@ -37,3 +41,9 @@ class PerclosTracker:
         self._samples.append(v)
         self._running_sum += v
         return self._running_sum / len(self._samples) if self._samples else 0.0
+
+    def reset(self) -> None:
+        """Drop the rolling window (prevents stale samples from a previous
+        session instantly pushing PERCLOS over the alert threshold)."""
+        self._samples.clear()
+        self._running_sum = 0.0

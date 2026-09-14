@@ -5,7 +5,7 @@ void main() {
   group('MonitoringSnapshot.fromJson', () {
     test('parses a full JSON payload', () {
       final json = <String, dynamic>{
-        'schema_version': 2,
+        'schema_version': 3,
         'sequence': 42,
         'server_id': 'abc123',
         'timestamp': 1700000000.0,
@@ -39,11 +39,12 @@ void main() {
         'calibration_progress': 0.5,
         'calibration_error': null,
         'calibration_valid_samples': 12,
+        'startup_countdown': 2.4,
       };
 
       final snap = MonitoringSnapshot.fromJson(json);
 
-      expect(snap.schemaVersion, 2);
+      expect(snap.schemaVersion, 3);
       expect(snap.sequence, 42);
       expect(snap.serverId, 'abc123');
       expect(snap.timestamp, 1700000000.0);
@@ -72,6 +73,7 @@ void main() {
       expect(snap.calibrationProgress, 0.5);
       expect(snap.calibrationError, isNull);
       expect(snap.calibrationValidSamples, 12);
+      expect(snap.startupCountdown, 2.4);
     });
 
     test('handles empty JSON with defaults', () {
@@ -90,6 +92,7 @@ void main() {
       expect(snap.calibrationState, 'idle');
       expect(snap.calibrationProgress, 0.0);
       expect(snap.calibrationError, isNull);
+      expect(snap.startupCountdown, 0.0);
     });
 
     test('handles int values where doubles expected', () {
@@ -114,6 +117,7 @@ void main() {
       expect(snap.serverId, '');
       expect(snap.alert, isNull);
       expect(snap.focused, false);
+      expect(snap.startupCountdown, 0.0);
     });
   });
 

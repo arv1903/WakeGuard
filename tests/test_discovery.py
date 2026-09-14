@@ -6,6 +6,9 @@ import pytest
 from yolo.discovery import DISCOVERY_PORT, PROBE_MAGIC, DiscoveryResponder
 
 TEST_API_PORT = 18765
+# Dedicated port: the shared DISCOVERY_PORT would race against a live
+# desktop backend running on this machine (its replies break assertions).
+TEST_DISCOVERY_PORT = DISCOVERY_PORT + 1000
 
 
 @pytest.fixture
@@ -15,6 +18,7 @@ def responder():
         api_port=TEST_API_PORT,
         device_name="test-desktop",
         platform="windows",
+        discovery_port=TEST_DISCOVERY_PORT,
     )
     r.start()
     try:
@@ -28,7 +32,7 @@ def _send_and_recv(message: bytes, target: str = "127.0.0.1", timeout: float = 2
     sock.settimeout(timeout)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     try:
-        sock.sendto(message, (target, DISCOVERY_PORT))
+        sock.sendto(message, (target, TEST_DISCOVERY_PORT))
         data, addr = sock.recvfrom(2048)
         return data, addr
     finally:

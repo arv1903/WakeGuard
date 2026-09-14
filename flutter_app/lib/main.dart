@@ -26,6 +26,11 @@ class DriverMonitorApp extends StatefulWidget {
   final String apiUrl;
   final bool autoStartBackend;
 
+  /// Deployment token for backends started with --api-token. Desktop runs
+  /// against a token-protected backend must pass the same value, e.g.:
+  ///   flutter run -d windows --dart-define=WAKEGUARD_API_TOKEN=<token>
+  static const apiToken = String.fromEnvironment('WAKEGUARD_API_TOKEN');
+
   @override
   State<DriverMonitorApp> createState() => _DriverMonitorAppState();
 }
@@ -41,7 +46,12 @@ class _DriverMonitorAppState extends State<DriverMonitorApp> {
   @override
   void initState() {
     super.initState();
-    client = MonitoringClient(baseUrl: widget.apiUrl);
+    client = MonitoringClient(
+      baseUrl: widget.apiUrl,
+      token: DriverMonitorApp.apiToken.isEmpty
+          ? null
+          : DriverMonitorApp.apiToken,
+    );
     authService = AuthService();
     connectionService = ConnectionService(client: client, authService: authService);
     backend = LocalBackendProcess();

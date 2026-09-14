@@ -7,7 +7,7 @@ import 'package:flutter/foundation.dart';
 
 import '../models/monitoring_snapshot.dart';
 
-enum BackendConnectionState { disconnected, connecting, connected, error }
+enum BackendConnectionState { disconnected, connecting, connected, error, authRejected }
 
 // ─── Client-side severity smoother ────────────────────────────────────────
 // The backend already applies EMA to all numeric telemetry fields. This
@@ -356,6 +356,30 @@ class MonitoringClient extends ChangeNotifier {
           _apply(response);
           delay = const Duration(milliseconds: 250);
         }
+      } on SocketException {
+        // The backend answered but closed the stream — treat like any other
+        // transport hiccup so the retry loop keeps its normal cadence.
+        if (generation != _generation || _disposed) return;
+        connectionState = BackendConnectionState.connecting;
+        errorMessage = null;
+        notifyListeners();
+        await Future<void>.delayed(delay);
+      } on HttpException catch (error) {
+        if (generation != _generation || _disposed) return;
+        // A 401 means the stored credential is dead (desktop reinstalled,
+        // token revoked or expired). Retrying forever would just burn the
+        // battery; surface it so the app can refresh or re-pair instead.
+        final unauthorized = error.message.contains('401');
+        connectionState = unauthorized
+            ? BackendConnectionState.authRejected
+            : BackendConnectionState.error;
+        errorMessage = error.message;
+        notifyListeners();
+        if (unauthorized) return; // stop hammering; recovery is caller's job
+        await Future<void>.delayed(delay);
+        delay = Duration(
+          milliseconds: (delay.inMilliseconds * 2).clamp(250, 5000).toInt(),
+        );
       } catch (error) {
         if (generation != _generation || _disposed) return;
         connectionState = BackendConnectionState.error;

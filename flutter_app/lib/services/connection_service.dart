@@ -11,10 +11,17 @@ import 'monitoring_client.dart';
 /// Wraps [MonitoringClient] and stores [backendUrl] / [bearerToken] in
 /// [SharedPreferences] so the user doesn't have to re-pair every launch.
 class ConnectionService extends ChangeNotifier {
-  ConnectionService({required this.client, this.authService});
+  ConnectionService({required this.client, this.authService}) {
+    // Watch the client so a dead credential (401 on every request) can
+    // trigger a silent refresh+reconnect instead of sitting in an error
+    // state until the user re-pairs by hand.
+    client.addListener(_onClientChanged);
+  }
 
   final AuthService? authService;
   Timer? _refreshTimer;
+  bool _recoveringAuth = false;
+  BackendConnectionState _lastKnownClientState = BackendConnectionState.disconnected;
 
   final MonitoringClient client;
 
@@ -166,6 +173,40 @@ class ConnectionService extends ChangeNotifier {
       token: _bearerToken,
     );
     _scheduleRefresh();
+  }
+
+  void _onClientChanged() {
+    // Republish only connection-state transitions, not every telemetry
+    // frame — screens listening here still get per-frame updates through
+    // the client itself, and this keeps notifications cheap.
+    if (client.connectionState != _lastKnownClientState) {
+      _lastKnownClientState = client.connectionState;
+      if (client.connectionState == BackendConnectionState.authRejected) {
+        unawaited(_recoverAfterAuthRejection());
+      }
+      notifyListeners();
+    }
+  }
+
+  /// The backend rejected the stored token. If we hold a Supabase refresh
+  /// token, mint a fresh JWT and reconnect transparently. Pairing-only
+  /// credentials can't be refreshed — the UI keeps showing 're-pair
+  /// required' and the user scans the desktop QR again.
+  Future<void> _recoverAfterAuthRejection() async {
+    if (_recoveringAuth || _backendUrl == null) return;
+    _recoveringAuth = true;
+    try {
+      final refreshed = authService != null &&
+          await authService!.refreshToken(backendUrl: _backendUrl!);
+      if (refreshed && authService!.jwt != null) {
+        _bearerToken = authService!.jwt;
+        _tokenExpiresAt = DateTime.now().add(const Duration(hours: 1));
+        await _save();
+        _applyToClient();
+      }
+    } finally {
+      _recoveringAuth = false;
+    }
   }
 
   void _scheduleRefresh() {

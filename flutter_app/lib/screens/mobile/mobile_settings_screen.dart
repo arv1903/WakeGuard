@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../services/auth_service.dart';
 import '../../services/connection_service.dart';
+import '../../services/monitoring_client.dart';
 import '../../theme.dart';
 
 /// Mobile settings screen matching the Stitch "Settings" mockup.
@@ -26,15 +27,32 @@ class MobileSettingsScreen extends StatefulWidget {
 }
 
 class _MobileSettingsScreenState extends State<MobileSettingsScreen> {
-  bool _telegramEnabled = true;
-  bool _alarmEnabled = true;
-  bool _sessionLogging = false;
   bool _forgetting = false;
+  bool _calibrating = false;
+  bool _loggingOut = false;
 
-  // Threshold values
-  double _attentionSensitivity = 85;
-  int _drowsyDetection = 2; // 0=Low, 1=Medium, 2=High
-  double _perclosTolerance = 12;
+  // Threshold positions — 0 Alert, 1 Balanced, 2 Relaxed (same names and
+  // values as the desktop calibration screen; lower thresholds = more
+  // sensitive detection).
+  int _poseSensitivity = 1;
+  int _drowsySensitivity = 1;
+  int _appliedPose = 1;
+  int _appliedDrowsy = 1;
+  Timer? _settingsDebounce;
+
+  static const _sensitivityLabels = ['Alert', 'Balanced', 'Relaxed'];
+
+  static const Map<int, Map<String, double>> _poseThresholds = {
+    0: {'pitch_threshold': 10.0, 'yaw_threshold': 15.0, 'roll_threshold': 6.0},
+    1: {'pitch_threshold': 20.0, 'yaw_threshold': 30.0, 'roll_threshold': 10.0},
+    2: {'pitch_threshold': 28.0, 'yaw_threshold': 38.0, 'roll_threshold': 18.0},
+  };
+
+  static const Map<int, Map<String, double>> _drowsyThresholds = {
+    0: {'ear_threshold': 0.15, 'microsleep_duration': 0.8},
+    1: {'ear_threshold': 0.20, 'microsleep_duration': 1.5},
+    2: {'ear_threshold': 0.25, 'microsleep_duration': 2.5},
+  };
 
   @override
   void initState() {
@@ -44,6 +62,7 @@ class _MobileSettingsScreenState extends State<MobileSettingsScreen> {
 
   @override
   void dispose() {
+    _settingsDebounce?.cancel();
     widget.connectionService.removeListener(_onUpdate);
     super.dispose();
   }
@@ -96,6 +115,89 @@ class _MobileSettingsScreenState extends State<MobileSettingsScreen> {
     if (mounted) setState(() => _forgetting = false);
   }
 
+  // ── Real connection state (was hardcoded 'NODE ACTIVE // UPLINK SECURE')
+
+  BackendConnectionState get _connectionState =>
+      widget.connectionService.client.connectionState;
+
+  Color get _uplinkColor {
+    switch (_connectionState) {
+      case BackendConnectionState.connected:
+        return Stitch.secondary;
+      case BackendConnectionState.connecting:
+        return Stitch.primary;
+      case BackendConnectionState.error:
+      case BackendConnectionState.authRejected:
+        return Stitch.error;
+      case BackendConnectionState.disconnected:
+        return Stitch.onSurfaceVariant;
+    }
+  }
+
+  String get _uplinkLabel {
+    switch (_connectionState) {
+      case BackendConnectionState.connected:
+        return 'NODE CONNECTED';
+      case BackendConnectionState.connecting:
+        return 'NODE CONNECTING...';
+      case BackendConnectionState.error:
+        return 'NODE ERROR // CHECK UPLINK';
+      case BackendConnectionState.authRejected:
+        return 'NODE ACCESS REVOKED // RE-PAIR REQUIRED';
+      case BackendConnectionState.disconnected:
+        return 'NODE DISCONNECTED';
+    }
+  }
+
+  Future<void> _startRecalibration() async {
+    if (_calibrating) return;
+    setState(() => _calibrating = true);
+    try {
+      await widget.connectionService.client
+          .sendCommand('/api/v1/calibration/start', {'duration': 4});
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Calibration failed: $e'),
+          backgroundColor: Stitch.error,
+        ));
+      }
+    }
+    if (mounted) setState(() => _calibrating = false);
+  }
+
+  void _queueThresholdUpdate() {
+    _settingsDebounce?.cancel();
+    _settingsDebounce = Timer(const Duration(milliseconds: 500), () async {
+      final payload = {
+        ..._poseThresholds[_poseSensitivity]!,
+        ..._drowsyThresholds[_drowsySensitivity]!,
+      };
+      try {
+        await widget.connectionService.client
+            .sendCommand('/api/v1/settings', payload);
+        if (mounted) {
+          setState(() {
+            _appliedPose = _poseSensitivity;
+            _appliedDrowsy = _drowsySensitivity;
+          });
+        }
+      } catch (e) {
+        // Revert to the last applied levels so the UI never lies.
+        if (mounted) {
+          setState(() {
+            _poseSensitivity = _appliedPose;
+            _drowsySensitivity = _appliedDrowsy;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Setting not applied: $e'),
+            backgroundColor: Stitch.error,
+          ));
+        }
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -121,19 +223,19 @@ class _MobileSettingsScreenState extends State<MobileSettingsScreen> {
                 Container(
                   width: 8,
                   height: 8,
-                  decoration: const BoxDecoration(
-                    color: Stitch.secondary,
+                  decoration: BoxDecoration(
+                    color: _uplinkColor,
                     shape: BoxShape.circle,
                   ),
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  'NODE ACTIVE // UPLINK SECURE',
+                  _uplinkLabel,
                   style: TextStyle(
                     fontSize: 12,
                     fontFamily: 'JetBrains Mono',
                     fontWeight: FontWeight.w500,
-                    color: Stitch.onSurfaceVariant,
+                    color: _uplinkColor,
                     letterSpacing: 1,
                   ),
                 ),
@@ -174,6 +276,25 @@ class _MobileSettingsScreenState extends State<MobileSettingsScreen> {
   }
 
   Widget _buildCalibrationCard() {
+    // Live state from the backend snapshot (idle | running | succeeded | failed).
+    final state = widget.connectionService.client.snapshot.calibrationState;
+    final label = switch (state) {
+      'running' => 'Calibrating...',
+      'succeeded' => 'Calibrated',
+      'failed' => 'Calibration failed',
+      _ => 'Ready',
+    };
+    final icon = switch (state) {
+      'running' => Icons.sync,
+      'succeeded' => Icons.check_circle,
+      'failed' => Icons.error_outline,
+      _ => Icons.info_outline,
+    };
+    final iconColor = state == 'succeeded'
+        ? Stitch.secondary
+        : state == 'failed'
+            ? Stitch.error
+            : Stitch.onSurfaceVariant;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(20),
@@ -184,8 +305,8 @@ class _MobileSettingsScreenState extends State<MobileSettingsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Current Profile',
+          const Text(
+            'Calibration',
             style: TextStyle(
               fontSize: 14,
               fontFamily: 'JetBrains Mono',
@@ -197,16 +318,16 @@ class _MobileSettingsScreenState extends State<MobileSettingsScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text(
-                'Standard Night Drive',
-                style: TextStyle(
+              Text(
+                label,
+                style: const TextStyle(
                   fontSize: 20,
                   fontFamily: 'JetBrains Mono',
                   fontWeight: FontWeight.w600,
                   color: Stitch.onSurface,
                 ),
               ),
-              const Icon(Icons.check_circle, color: Stitch.secondary, size: 20),
+              Icon(icon, color: iconColor, size: 20),
             ],
           ),
           const SizedBox(height: 16),
@@ -216,22 +337,36 @@ class _MobileSettingsScreenState extends State<MobileSettingsScreen> {
               color: Stitch.containerHigh,
               borderRadius: BorderRadius.circular(8),
               child: InkWell(
-                onTap: () {},
+                onTap: _calibrating ? null : _startRecalibration,
                 borderRadius: BorderRadius.circular(8),
                 child: Container(
                   padding: const EdgeInsets.symmetric(vertical: 16),
-                  child: const Row(
+                  child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(Icons.tune, size: 18, color: Stitch.primary),
-                      SizedBox(width: 8),
+                      if (_calibrating) ...[
+                        const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Stitch.primary),
+                        ),
+                        const SizedBox(width: 8),
+                      ] else
+                        const Icon(Icons.tune,
+                            size: 18, color: Stitch.primary),
+                      const SizedBox(width: 8),
                       Text(
-                        'INITIATE RECALIBRATION',
+                        _calibrating
+                            ? 'CALIBRATING...'
+                            : 'INITIATE RECALIBRATION',
                         style: TextStyle(
                           fontSize: 12,
                           fontFamily: 'JetBrains Mono',
                           fontWeight: FontWeight.w700,
-                          color: Stitch.primary,
+                          color: _calibrating
+                              ? Stitch.onSurfaceVariant
+                              : Stitch.primary,
                           letterSpacing: 1.5,
                         ),
                       ),
@@ -257,37 +392,50 @@ class _MobileSettingsScreenState extends State<MobileSettingsScreen> {
       child: Column(
         children: [
           _ThresholdSlider(
-            label: 'Attention Sensitivity',
-            value: '${_attentionSensitivity.round()}%',
+            label: 'Head Pose Sensitivity',
+            value: _sensitivityLabels[_poseSensitivity],
             color: Stitch.primary,
-            sliderValue: _attentionSensitivity / 100,
+            sliderValue: _poseSensitivity / 2,
             activeColor: Stitch.primary,
-            onChanged: (v) => setState(() => _attentionSensitivity = v * 100),
+            onChanged: (v) {
+              setState(() => _poseSensitivity = (v * 2).round());
+              _queueThresholdUpdate();
+            },
           ),
           const SizedBox(height: 20),
           _ThresholdSlider(
             label: 'Drowsy Detection',
-            value: ['Low', 'Medium', 'High'][_drowsyDetection],
+            value: _sensitivityLabels[_drowsySensitivity],
             color: Stitch.tertiaryFixedDim,
-            sliderValue: _drowsyDetection / 2,
+            sliderValue: _drowsySensitivity / 2,
             activeColor: Stitch.tertiaryFixedDim,
-            onChanged: (v) => setState(() => _drowsyDetection = (v * 2).round()),
+            onChanged: (v) {
+              setState(() => _drowsySensitivity = (v * 2).round());
+              _queueThresholdUpdate();
+            },
           ),
-          const SizedBox(height: 20),
-          _ThresholdSlider(
-            label: 'PERCLOS Tolerance',
-            value: '${_perclosTolerance.round()}%',
-            color: Stitch.secondary,
-            sliderValue: _perclosTolerance / 30,
-            activeColor: Stitch.secondary,
-            onChanged: (v) => setState(() => _perclosTolerance = v * 30),
-          ),
+          const SizedBox(height: 12),
+          if (_poseSensitivity != _appliedPose ||
+              _drowsySensitivity != _appliedDrowsy)
+            const Text(
+              'Applying...',
+              style: TextStyle(
+                fontSize: 11,
+                fontFamily: 'JetBrains Mono',
+                color: Stitch.onSurfaceVariant,
+              ),
+            ),
         ],
       ),
     );
   }
 
   Widget _buildModulesCard() {
+    // The backend has no Telegram or session-logging endpoints, so those
+    // toggles are gone rather than faked. Alarm state comes from the live
+    // snapshot and maps to the real mute/unmute endpoints.
+    final alarmEnabled =
+        !widget.connectionService.client.snapshot.alarmMuted;
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
@@ -297,24 +445,23 @@ class _MobileSettingsScreenState extends State<MobileSettingsScreen> {
       child: Column(
         children: [
           _ModuleToggle(
-            icon: Icons.send,
-            title: 'Telegram Notifications',
-            value: _telegramEnabled,
-            onChanged: (v) => setState(() => _telegramEnabled = v),
-          ),
-          _Divider(),
-          _ModuleToggle(
             icon: Icons.volume_up,
             title: 'Alarm Sound',
-            value: _alarmEnabled,
-            onChanged: (v) => setState(() => _alarmEnabled = v),
-          ),
-          _Divider(),
-          _ModuleToggle(
-            icon: Icons.data_saver_on,
-            title: 'Session Logging',
-            value: _sessionLogging,
-            onChanged: (v) => setState(() => _sessionLogging = v),
+            value: alarmEnabled,
+            onChanged: (enabled) async {
+              final path =
+                  enabled ? '/api/v1/alarm/unmute' : '/api/v1/alarm/mute';
+              try {
+                await widget.connectionService.client.sendCommand(path);
+              } catch (e) {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                    content: Text('Alarm setting failed: $e'),
+                    backgroundColor: Stitch.error,
+                  ));
+                }
+              }
+            },
           ),
         ],
       ),
@@ -322,7 +469,7 @@ class _MobileSettingsScreenState extends State<MobileSettingsScreen> {
   }
 
   Widget _buildAccountCard() {
-    final email = widget.authService.email ?? 'user@example.com';
+    final email = widget.authService.email ?? 'unknown account';
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(20),
@@ -374,20 +521,35 @@ class _MobileSettingsScreenState extends State<MobileSettingsScreen> {
             color: Stitch.containerHighest,
             borderRadius: BorderRadius.circular(8),
             child: InkWell(
-              onTap: () {},
+              onTap: _loggingOut
+                  ? null
+                  : () async {
+                      setState(() => _loggingOut = true);
+                      try {
+                        await widget.authService.logout();
+                      } finally {
+                        if (mounted) setState(() => _loggingOut = false);
+                      }
+                    },
               borderRadius: BorderRadius.circular(8),
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                child: const Text(
-                  'LOGOUT',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontFamily: 'JetBrains Mono',
-                    fontWeight: FontWeight.w700,
-                    color: Stitch.onSurface,
-                    letterSpacing: 1,
-                  ),
-                ),
+                child: _loggingOut
+                    ? const SizedBox(
+                        width: 12,
+                        height: 12,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text(
+                        'LOGOUT',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontFamily: 'JetBrains Mono',
+                          fontWeight: FontWeight.w700,
+                          color: Stitch.onSurface,
+                          letterSpacing: 1,
+                        ),
+                      ),
               ),
             ),
           ),
@@ -603,14 +765,4 @@ class _ModuleToggle extends StatelessWidget {
   }
 }
 
-// ─── Divider ────────────────────────────────────────────────────────────────
 
-class _Divider extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 1,
-      color: Stitch.containerHighest,
-    );
-  }
-}

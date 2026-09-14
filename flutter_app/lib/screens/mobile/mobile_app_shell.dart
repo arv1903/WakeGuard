@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../services/connection_service.dart';
 import '../../theme.dart';
+import '../pairing_scanner_screen.dart';
 import 'connection_setup_screen.dart';
 import 'mobile_live_monitor_screen.dart';
 import 'mobile_history_screen.dart';
@@ -100,6 +101,11 @@ class _MobileAppShellState extends State<MobileAppShell> {
       return ConnectionSetupScreen(
         connectionService: cs,
         authService: widget.authService,
+        onScanQr: (context) {
+          Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) => PairingScannerScreen(connectionService: cs),
+          ));
+        },
       );
     }
 
@@ -220,10 +226,7 @@ class _MobileAppShellState extends State<MobileAppShell> {
     final client = widget.connectionService.client;
     switch (_selectedIndex) {
       case 0:
-        return MobileLiveMonitorScreen(
-          client: client,
-          sessionStartTime: null,
-        );
+        return MobileLiveMonitorScreen(client: client);
       case 1:
         return MobileHistoryScreen(client: client);
       case 2:
@@ -303,6 +306,7 @@ class _NavItem extends StatelessWidget {
         height: 48,
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
               icon,
@@ -311,13 +315,19 @@ class _NavItem extends StatelessWidget {
               opticalSize: 24,
             ),
             const SizedBox(height: 4),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 11,
-                fontFamily: 'JetBrains Mono',
-                fontWeight: FontWeight.w500,
-                color: color,
+            // FittedBox + explicit line height: large accessibility font
+            // scales must shrink the label, never overflow the 48px item.
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: 11,
+                  height: 1.0,
+                  fontFamily: 'JetBrains Mono',
+                  fontWeight: FontWeight.w500,
+                  color: color,
+                ),
               ),
             ),
           ],
