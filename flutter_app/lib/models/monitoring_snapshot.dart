@@ -34,10 +34,11 @@ class MonitoringSnapshot {
     required this.calibrationProgress,
     required this.calibrationError,
     required this.calibrationValidSamples,
+    this.startupCountdown = 0,
   });
 
   factory MonitoringSnapshot.initial() => const MonitoringSnapshot(
-        schemaVersion: 2,
+        schemaVersion: 3,
         sequence: 0,
         serverId: '',
         timestamp: 0,
@@ -119,6 +120,7 @@ class MonitoringSnapshot {
       calibrationError: json['calibration_error'] as String?,
       calibrationValidSamples:
           (json['calibration_valid_samples'] as num?)?.toInt() ?? 0,
+      startupCountdown: number('startup_countdown'),
     );
   }
 
@@ -156,6 +158,9 @@ class MonitoringSnapshot {
   final double calibrationProgress;
   final String? calibrationError;
   final int calibrationValidSamples;
+
+  /// Seconds remaining in the 3-2-1 startup grace period (0 = not counting).
+  final double startupCountdown;
 
   String get status {
     if (alertSeverity >= 4) return 'Critical';

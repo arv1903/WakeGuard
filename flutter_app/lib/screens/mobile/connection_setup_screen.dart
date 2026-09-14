@@ -1,19 +1,36 @@
-import 'dart:convert';
-import 'dart:io';
+import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../services/auth_service.dart';
 import '../../services/connection_service.dart';
+import '../../services/device_discovery_service.dart';
+import '../../services/discovery_client.dart';
 import '../../theme.dart';
 
-/// Full-screen connection setup for the mobile companion.
+/// Full-screen connection setup matching the Stitch "Connection Setup" mockup.
 ///
-/// Matches the Stitch "Connection Setup" mockup: shield logo, URL input,
-/// Connect button, Pair with Code option.
+/// Shows pulsing logo, backend URL card, auth card with sign in/create account
+/// toggle, and device discovery list.
 class ConnectionSetupScreen extends StatefulWidget {
-  const ConnectionSetupScreen({super.key, required this.connectionService});
+  const ConnectionSetupScreen({
+    super.key,
+    required this.connectionService,
+    required this.authService,
+    this.discoveryClient,
+    this.onScanQr,
+  });
 
   final ConnectionService connectionService;
+  final AuthService authService;
+
+  /// Injectable for tests; defaults to the real UDP prober.
+  final DiscoveryClient? discoveryClient;
+
+  /// Opens the QR scanner; injectable for tests. When null, the entry is
+  /// hidden (e.g. desktop layouts where scanning makes no sense).
+  final void Function(BuildContext context)? onScanQr;
 
   @override
   State<ConnectionSetupScreen> createState() => _ConnectionSetupScreenState();
@@ -21,20 +38,28 @@ class ConnectionSetupScreen extends StatefulWidget {
 
 class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
     with SingleTickerProviderStateMixin {
-  final _urlController = TextEditingController();
-  final _codeController = TextEditingController();
-  final _urlFocus = FocusNode();
-  bool _isConnecting = false;
-  bool _isExchanging = false;
-  _SetupPhase _phase = _setupPhase;
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  final _backendUrlController = TextEditingController();
+  final _nameController = TextEditingController();
+  bool _isLoading = false;
+  bool _isRegistering = false;
+  bool _showManualEntry = false;
+  String? _error;
 
-  // Pairing code fetched from the backend (displayed on desktop).
-  String? _pairingCode;
+  // Device discovery state
+  List<DeviceInfo> _devices = [];
+  bool _devicesLoaded = false;
+
+  // LAN auto-discovery state
+  static const _probeTimeout = Duration(milliseconds: 1200);
+  List<DiscoveredBackend> _backends = [];
+  bool _probing = true;
+  bool _hasProbed = false;
+
+  final _discoveryService = DeviceDiscoveryService();
 
   late AnimationController _pulseCtrl;
-
-  static _SetupPhase _setupPhase = _SetupPhase.input;
-  static String? _savedUrl;
 
   @override
   void initState() {
@@ -43,128 +68,149 @@ class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
       vsync: this,
       duration: const Duration(seconds: 3),
     )..repeat();
-    if (_savedUrl != null) _urlController.text = _savedUrl!;
+    // 127.0.0.1 is only meaningful when the app runs beside the backend
+    // (desktop). On a phone it means "dial yourself" — the exact mistake
+    // behind 'SocketConnection refused … errno 11' after scanning a QR.
+    _backendUrlController.text =
+        _isPhone ? '' : 'http://127.0.0.1:8765';
+    _startAutoDiscovery();
+  }
+
+  static bool get _isPhone {
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.android:
+      case TargetPlatform.iOS:
+        return true;
+      default:
+        return false;
+    }
   }
 
   @override
   void dispose() {
     _pulseCtrl.dispose();
-    _urlController.dispose();
-    _codeController.dispose();
-    _urlFocus.dispose();
+    _emailController.dispose();
+    _passwordController.dispose();
+    _backendUrlController.dispose();
+    _nameController.dispose();
+    _discoveryService.dispose();
     super.dispose();
   }
 
-  // ── Actions ──────────────────────────────────────────────────────────────
+  Future<void> _login() async {
+    final email = _emailController.text.trim();
+    final password = _passwordController.text.trim();
+    final backendUrl = _backendUrlController.text.trim();
 
-  Future<void> _connect() async {
-    final url = _urlController.text.trim();
-    if (url.length < 5) {
-      setState(() {
-        _phase = _SetupPhase.error;
-      });
-      _resetPhaseAfterDelay();
+    if (email.isEmpty || password.isEmpty || backendUrl.isEmpty) {
+      setState(() => _error = 'All fields are required');
       return;
     }
 
-    final normalised = url.startsWith('http') ? url : 'http://$url';
-    setState(() {
-      _isConnecting = true;        _phase = _SetupPhase.connecting;
-    });
+    final normalisedUrl = backendUrl.startsWith('http')
+        ? backendUrl
+        : 'http://$backendUrl';
+
+    // A phone can never reach a desktop via loopback — catch it here
+    // instead of letting the connection loop fail with a cryptic errno 11.
+    final parsedUrl = Uri.tryParse(normalisedUrl);
+    final isLoopback = parsedUrl != null &&
+        (parsedUrl.host == '127.0.0.1' || parsedUrl.host == 'localhost');
+    if (_isPhone && isLoopback) {
+      setState(() {
+        _error = "'127.0.0.1' is this phone itself. Scan the desktop's "
+            'pairing QR, or enter its LAN IP (e.g. 192.168.1.50:8765).';
+      });
+      return;
+    }
+
+    setState(() { _isLoading = true; _error = null; });
 
     try {
-      await widget.connectionService.connectTo(normalised);
-      // Try a health check — if 401/403, we need pairing.
-      final client = widget.connectionService.client;
-      final request = await HttpClient().getUrl(
-        Uri.parse('${widget.connectionService.backendUrl}/api/v1/health'),
-      );
-      if (client.token != null) {
-        request.headers.add('Authorization', 'Bearer ${client.token}');
-      }
-      final response = await request.close();
-      final body = await response.transform(utf8.decoder).join();
-
-      if (response.statusCode == 200) {
-        // Connected — backend needs no token; unlock the dashboard.
-        await widget.connectionService.markNoAuth(normalised);
-        client.connect();
-        _savedUrl = normalised;
-        setState(() {
-          _isConnecting = false;
-          _phase = _SetupPhase.connected;
-        });
-      } else if (response.statusCode == 401 || response.statusCode == 403) {
-        // Need pairing.
-        setState(() {
-          _isConnecting = false;
-          _phase = _SetupPhase.needsPairing;
-        });
+      if (_isRegistering) {
+        await widget.authService.register(
+          email, password,
+          displayName: _nameController.text.trim(),
+          backendUrl: normalisedUrl,
+        );
       } else {
-        throw Exception('HTTP ${response.statusCode}: $body');
+        await widget.authService.login(
+          email, password,
+          backendUrl: normalisedUrl,
+        );
       }
+
+      await widget.connectionService.connectTo(normalisedUrl);
+      // Skip device discovery — proceed straight to the app.
+      setState(() { _devicesLoaded = true; });
     } catch (e) {
       setState(() {
-        _isConnecting = false;
-        _phase = _SetupPhase.error;
+        _error = e.toString().replaceFirst('Exception: ', '');
+        _devicesLoaded = true; // Always allow the UI to proceed
       });
-      _resetPhaseAfterDelay();
+    }
+    if (mounted) setState(() { _isLoading = false; });
+  }
+
+  // ── LAN auto-discovery ─────────────────────────────────────────────────
+
+  Future<void> _startAutoDiscovery() async {
+    setState(() { _probing = true; });
+    try {
+      final backends = await (widget.discoveryClient ?? DiscoveryClient())
+          .discover()
+          .timeout(_probeTimeout + const Duration(milliseconds: 800));
+      if (!mounted) return;
+      setState(() {
+        _backends = backends;
+        _probing = false;
+        _hasProbed = true;
+        // Nothing found → manual entry is the primary path now.
+        if (backends.isEmpty) _showManualEntry = true;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _probing = false;
+        _hasProbed = true;
+        _showManualEntry = true;
+      });
     }
   }
 
-  Future<void> _fetchPairingCode() async {
-    setState(() {
-      _isConnecting = true;        _phase = _SetupPhase.connecting;
-    });
+  void _adopt(DiscoveredBackend backend) {
+    setState(() { _backendUrlController.text = backend.url; });
+  }
+
+  Future<void> _pairWithDevice(DeviceInfo device) async {
+    final jwt = widget.authService.jwt;
+    if (jwt == null) return;
+
+    setState(() { _isLoading = true; _error = null; });
 
     try {
-      final result = await widget.connectionService.client.fetchPairing();
-      setState(() {
-        _isConnecting = false;
-        _pairingCode = result['code'] as String?;
-        _phase = _SetupPhase.showingCode;
-      });
+      final result = await _discoveryService.pairWithDevice(
+        _backendUrlController.text.trim().startsWith('http')
+            ? _backendUrlController.text.trim()
+            : 'http://${_backendUrlController.text.trim()}',
+        jwt,
+        device.id,
+      );
+
+      final deviceUrl = result.deviceUrl ?? device.connectionUrl;
+      await widget.connectionService.connectTo(
+        deviceUrl,
+        manualToken: result.accessToken,
+      );
+
+      setState(() { _isLoading = false; });
     } catch (e) {
       setState(() {
-        _isConnecting = false;
-        _phase = _SetupPhase.error;
+        _isLoading = false;
+        _error = e.toString().replaceFirst('Exception: ', '');
       });
-      _resetPhaseAfterDelay();
     }
   }
-
-  Future<void> _exchangeCode() async {
-    final code = _codeController.text.trim();
-    if (code.isEmpty) return;
-
-    setState(() {
-      _isExchanging = true;
-    });
-
-    try {
-      await widget.connectionService.completePairing(code);
-      setState(() {
-        _isExchanging = false;
-        _phase = _SetupPhase.connected;
-      });
-    } catch (e) {
-      setState(() {
-        _isExchanging = false;
-        _phase = _SetupPhase.showingCode;
-      });
-      _resetPhaseAfterDelay();
-    }
-  }
-
-  void _resetPhaseAfterDelay() {
-    Future.delayed(const Duration(seconds: 3), () {
-      if (mounted && _phase == _SetupPhase.error) {
-        setState(() => _phase = _SetupPhase.input);
-      }
-    });
-  }
-
-  // ── Build ────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -174,27 +220,38 @@ class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
       backgroundColor: Stitch.background,
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: EdgeInsets.fromLTRB(20, 32, 20, 20 + bottomPad),
+          padding: EdgeInsets.fromLTRB(20, 16, 20, 20 + bottomPad),
           child: Column(
             children: [
-              const SizedBox(height: 40),
+              // Logo
               _buildLogo(),
-              const SizedBox(height: 32),
-              _buildUrlCard(),
               const SizedBox(height: 24),
-              _buildPairButton(),
+
+              // Error banner
+              if (_error != null) ...[
+                _buildErrorBanner(),
+                const SizedBox(height: 16),
+              ],
+
+              // Auth flow
+              if (!widget.authService.isLoggedIn) ...[
+                _buildDiscoverySection(),
+                if (widget.onScanQr != null) ...[
+                  const SizedBox(height: 12),
+                  _buildScanQrEntry(),
+                ],
+                const SizedBox(height: 16),
+                _buildAuthCard(),
+              ] else if (!_devicesLoaded) ...[
+                _buildDiscoverySection(),
+                const SizedBox(height: 16),
+                _buildDiscoveringCard(),
+              ] else ...[
+                _buildDeviceList(),
+              ],
+
               const SizedBox(height: 16),
-              _buildPairingCodeEntry(),
-              const SizedBox(height: 16),
-              Text(
-                'Enter the IP address shown on the desktop app',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontFamily: 'JetBrains Mono',
-                  color: Stitch.onSurfaceVariant.withValues(alpha: 0.7),
-                ),
-                textAlign: TextAlign.center,
-              ),
+              _buildManualToggle(),
             ],
           ),
         ),
@@ -202,57 +259,51 @@ class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
     );
   }
 
+  // ── Logo ───────────────────────────────────────────────────────────────
+
   Widget _buildLogo() {
     return Column(
       children: [
-        // Shield with pulsing rings
         SizedBox(
-          width: 96,
-          height: 96,
+          width: 128,
+          height: 128,
           child: Stack(
             alignment: Alignment.center,
             children: [
-              // Outer pulse ring
+              // Pulsing ring
               AnimatedBuilder(
                 animation: _pulseCtrl,
                 builder: (_, __) {
                   final v = _pulseCtrl.value;
                   return Container(
-                    width: 96,
-                    height: 96,
+                    width: 128,
+                    height: 128,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: Stitch.primary.withValues(alpha: 0.08 * (1 - v)),
-                    ),
-                  );
-                },
-              ),
-              // Inner pulse ring (offset)
-              AnimatedBuilder(
-                animation: _pulseCtrl,
-                builder: (_, __) {
-                  final v = (_pulseCtrl.value + 0.5) % 1.0;
-                  return Container(
-                    width: 80,
-                    height: 80,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Stitch.primary.withValues(alpha: 0.12 * (1 - v)),
+                      color: Stitch.primary.withValues(alpha: 0.2 * (1 - v)),
                     ),
                   );
                 },
               ),
               // Shield icon
-              Icon(
-                Icons.shield,
-                size: 48,
-                color: Stitch.primary,
-                shadows: [
-                  Shadow(
-                    color: Stitch.primary.withValues(alpha: 0.5),
-                    blurRadius: 12,
-                  ),
-                ],
+              Container(
+                width: 96,
+                height: 96,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Stitch.primary.withValues(alpha: 0.1),
+                ),
+                child: Icon(
+                  Icons.shield,
+                  size: 48,
+                  color: Stitch.primary,
+                  shadows: [
+                    Shadow(
+                      color: Stitch.primary.withValues(alpha: 0.5),
+                      blurRadius: 12,
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
@@ -263,7 +314,7 @@ class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
           style: TextStyle(
             fontSize: 24,
             fontWeight: FontWeight.w600,
-            color: Stitch.onBackground,
+            color: Stitch.onSurface,
             letterSpacing: 0.5,
           ),
         ),
@@ -279,65 +330,75 @@ class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
     );
   }
 
-  Widget _buildUrlCard() {
-    // Status dot color
-    Color dotColor;
-    switch (_phase) {
-      case _SetupPhase.connected:
-        dotColor = Stitch.secondary;
-      case _SetupPhase.connecting:
-      case _SetupPhase.showingCode:
-        dotColor = Stitch.primary;
-      case _SetupPhase.error:
-        dotColor = Stitch.error;
-      default:
-        dotColor = Stitch.outlineVariant;
-    }
+  // ── Error Banner ───────────────────────────────────────────────────────
 
+  Widget _buildErrorBanner() {
     return Container(
       width: double.infinity,
-      constraints: const BoxConstraints(maxWidth: 400),
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Stitch.errorContainer.withValues(alpha: 0.3),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: Stitch.error.withValues(alpha: 0.3),
+        ),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.warning, color: Stitch.error, size: 20),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Connection Refused',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: Stitch.onErrorContainer,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _error!,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Stitch.onErrorContainer.withValues(alpha: 0.8),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Backend URL Card ───────────────────────────────────────────────────
+
+  Widget _buildBackendUrlCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: Stitch.container,
         borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.3),
-            blurRadius: 16,
-            offset: const Offset(0, 4),
-          ),
-        ],
+        border: Border.all(color: Stitch.outlineVariant.withValues(alpha: 0.5)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Label with status dot
           Row(
             children: [
-              Container(
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(
-                  color: dotColor,
-                  shape: BoxShape.circle,
-                  boxShadow: _phase == _SetupPhase.connected
-                      ? [
-                          BoxShadow(
-                            color: Stitch.secondary.withValues(alpha: 0.6),
-                            blurRadius: 6,
-                          ),
-                        ]
-                      : null,
-                ),
-              ),
+              const Icon(Icons.dns, size: 16, color: Stitch.primary),
               const SizedBox(width: 8),
               Text(
-                'BACKEND ADDRESS',
+                'BACKEND SERVER',
                 style: TextStyle(
                   fontSize: 11,
                   fontFamily: 'JetBrains Mono',
-                  fontWeight: FontWeight.w500,
+                  fontWeight: FontWeight.w700,
                   color: Stitch.onSurface,
                   letterSpacing: 1.5,
                 ),
@@ -345,75 +406,396 @@ class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
             ],
           ),
           const SizedBox(height: 12),
-          // URL input
-          TextField(
-            controller: _urlController,
-            focusNode: _urlFocus,
-            style: const TextStyle(
-              fontFamily: 'JetBrains Mono',
-              fontSize: 14,
-              color: Stitch.onSurface,
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            decoration: BoxDecoration(
+              color: Stitch.surfaceLowest,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Stitch.outlineVariant.withValues(alpha: 0.5)),
             ),
-            decoration: InputDecoration(
-              prefixIcon: Icon(Icons.dns, size: 20, color: Stitch.primary),
-              hintText: '192.168.1.50:8765',
-              hintStyle: TextStyle(
-                fontFamily: 'JetBrains Mono',
-                fontSize: 14,
-                color: Stitch.onSurfaceVariant.withValues(alpha: 0.5),
-              ),
-              filled: true,
-              fillColor: _phase == _SetupPhase.error
-                  ? Stitch.error.withValues(alpha: 0.08)
-                  : Stitch.surface,
-              contentPadding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-                borderSide: BorderSide.none,
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-                borderSide: BorderSide(
-                  color: _phase == _SetupPhase.error
-                      ? Stitch.error
-                      : Stitch.primary,
-                  width: 1,
+            child: Row(
+              children: [
+                const Icon(Icons.terminal, size: 18, color: Stitch.onSurfaceVariant),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: TextField(
+                    controller: _backendUrlController,
+                    style: const TextStyle(
+                      fontFamily: 'JetBrains Mono',
+                      fontSize: 14,
+                      color: Stitch.onSurface,
+                    ),
+                    decoration: InputDecoration(
+                      hintText: '192.168.1.100:8080',
+                      hintStyle: TextStyle(
+                        fontFamily: 'JetBrains Mono',
+                        fontSize: 14,
+                        color: Stitch.onSurfaceVariant.withValues(alpha: 0.5),
+                      ),
+                      border: InputBorder.none,
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                    keyboardType: TextInputType.url,
+                    textInputAction: TextInputAction.next,
+                  ),
                 ),
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: const BoxDecoration(
+                    color: Stitch.secondary,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── LAN Auto-Discovery ──────────────────────────────────────────────
+
+  /// Searching → found list → (nothing) manual fallback with a hint.
+  /// The manual URL card is always reachable via the toggle, even when a
+  /// backend was found (the detected address may be wrong on multi-homed PCs).
+  Widget _buildDiscoverySection() {
+    if (_probing && !_hasProbed) return _buildSearchingCard();
+    final found = _backends.isNotEmpty ? _buildFoundCard() : null;
+    if (found != null && !_showManualEntry) return found;
+    return Column(
+      children: [
+        if (found != null) ...[found, const SizedBox(height: 16)],
+        if (_backends.isEmpty) ...[
+          _buildNotFoundHint(),
+          const SizedBox(height: 16),
+        ],
+        _buildBackendUrlCard(),
+      ],
+    );
+  }
+
+  Widget _buildSearchingCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Stitch.container,
+        borderRadius: BorderRadius.circular(12),
+        border:
+            Border.all(color: Stitch.outlineVariant.withValues(alpha: 0.5)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const SizedBox(
+            width: 16,
+            height: 16,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: Stitch.secondary,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Text(
+            'SEARCHING FOR DESKTOP',
+            style: TextStyle(
+              fontSize: 12,
+              fontFamily: 'JetBrains Mono',
+              fontWeight: FontWeight.w500,
+              color: Stitch.onSurfaceVariant,
+              letterSpacing: 1.5,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFoundCard() {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: Stitch.container,
+        borderRadius: BorderRadius.circular(12),
+        border:
+            Border.all(color: Stitch.outlineVariant.withValues(alpha: 0.5)),
+      ),
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: const BoxDecoration(
+              border: Border(
+                bottom: BorderSide(color: Stitch.outlineVariant, width: 0.5),
               ),
             ),
-            keyboardType: TextInputType.url,
-            textInputAction: TextInputAction.go,
-            onSubmitted: (_) => _connect(),
+            child: Row(
+              children: [
+                const Icon(Icons.radar, size: 16, color: Stitch.secondary),
+                const SizedBox(width: 8),
+                Text(
+                  'FOUND ON THIS WI-FI',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontFamily: 'JetBrains Mono',
+                    fontWeight: FontWeight.w700,
+                    color: Stitch.secondary,
+                    letterSpacing: 1.5,
+                  ),
+                ),
+                const Spacer(),
+                GestureDetector(
+                  onTap: _startAutoDiscovery,
+                  child: const Icon(Icons.refresh,
+                      size: 18, color: Stitch.secondary),
+                ),
+              ],
+            ),
           ),
-          const SizedBox(height: 16),
-          // Connect button
-          SizedBox(
-            width: double.infinity,
-            height: 48,
-            child: ElevatedButton(
-              onPressed: _isConnecting ? null : _connect,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _phase == _SetupPhase.connected
-                    ? Stitch.secondary
-                    : _phase == _SetupPhase.error
-                        ? Stitch.error
-                        : Stitch.primary,
-                foregroundColor: _phase == _SetupPhase.connected
-                    ? Stitch.onSecondary
-                    : _phase == _SetupPhase.error
-                        ? Stitch.onError
-                        : Stitch.onPrimary,
-                disabledBackgroundColor:
-                    Stitch.primary.withValues(alpha: 0.5),
-                disabledForegroundColor:
-                    Stitch.onPrimary.withValues(alpha: 0.5),
-                shape: RoundedRectangleBorder(
+          ..._backends.map(_buildBackendTile),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBackendTile(DiscoveredBackend backend) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => _adopt(backend),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: const BoxDecoration(
+            border: Border(
+              bottom: BorderSide(color: Stitch.outlineVariant, width: 0.5),
+            ),
+          ),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Stitch.primary.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                elevation: 0,
+                child: const Icon(Icons.desktop_windows,
+                    size: 20, color: Stitch.primary),
               ),
-              child: _isConnecting
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      backend.deviceName,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                        color: Stitch.onSurface,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      backend.url,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontFamily: 'JetBrains Mono',
+                        color: Stitch.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right,
+                  size: 20, color: Stitch.onSurfaceVariant),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNotFoundHint() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Stitch.surfaceLowest,
+        borderRadius: BorderRadius.circular(12),
+        border:
+            Border.all(color: Stitch.outlineVariant.withValues(alpha: 0.5)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.wifi_off,
+              size: 16, color: Stitch.onSurfaceVariant.withValues(alpha: 0.7)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Desktop not found automatically. Make sure both devices are '
+              'on the same Wi-Fi and the desktop backend is running.',
+              style: TextStyle(
+                fontSize: 12,
+                color: Stitch.onSurfaceVariant.withValues(alpha: 0.8),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildScanQrEntry() {
+    return GestureDetector(
+      onTap: () => widget.onScanQr?.call(context),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.qr_code_scanner, size: 14, color: Stitch.secondary),
+          const SizedBox(width: 6),
+          Text(
+            'Scan QR Code',
+            style: TextStyle(
+              fontSize: 12,
+              fontFamily: 'JetBrains Mono',
+              fontWeight: FontWeight.w700,
+              color: Stitch.secondary,
+              letterSpacing: 1,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Auth Card ──────────────────────────────────────────────────────────
+
+  Widget _buildAuthCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Stitch.container,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Stitch.outlineVariant.withValues(alpha: 0.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Toggle buttons
+          Container(
+            padding: const EdgeInsets.all(4),
+            decoration: BoxDecoration(
+              color: Stitch.surfaceLowest,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Stitch.outlineVariant.withValues(alpha: 0.5)),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () => setState(() => _isRegistering = false),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      decoration: BoxDecoration(
+                        color: !_isRegistering ? Stitch.containerHighest : Colors.transparent,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        'SIGN IN',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontFamily: 'JetBrains Mono',
+                          fontWeight: FontWeight.w700,
+                          color: !_isRegistering ? Stitch.onSurface : Stitch.onSurfaceVariant,
+                          letterSpacing: 1.5,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () => setState(() => _isRegistering = true),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      decoration: BoxDecoration(
+                        color: _isRegistering ? Stitch.containerHighest : Colors.transparent,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        'CREATE ACCOUNT',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontFamily: 'JetBrains Mono',
+                          fontWeight: FontWeight.w700,
+                          color: _isRegistering ? Stitch.onSurface : Stitch.onSurfaceVariant,
+                          letterSpacing: 1.5,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          // Name field (register only)
+          if (_isRegistering) ...[
+            _AuthField(
+              label: 'DISPLAY NAME',
+              icon: Icons.person_outline,
+              controller: _nameController,
+              hint: 'Your name',
+              textInputAction: TextInputAction.next,
+            ),
+            const SizedBox(height: 16),
+          ],
+
+          // Email
+          _AuthField(
+            label: 'OPERATIVE EMAIL',
+            icon: Icons.mail,
+            controller: _emailController,
+            hint: 'agent@wakeguard.sys',
+            keyboardType: TextInputType.emailAddress,
+            textInputAction: TextInputAction.next,
+          ),
+          const SizedBox(height: 16),
+
+          // Password
+          _AuthField(
+            label: 'ACCESS KEY',
+            icon: Icons.key,
+            controller: _passwordController,
+            hint: '••••••••',
+            obscure: true,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => _login(),
+          ),
+          const SizedBox(height: 20),
+
+          // Submit
+          SizedBox(
+            width: double.infinity,
+            height: 56,
+            child: ElevatedButton(
+              onPressed: _isLoading ? null : _login,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Stitch.primary,
+                foregroundColor: Stitch.onPrimary,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                elevation: 4,
+                shadowColor: Stitch.primary.withValues(alpha: 0.2),
+              ),
+              child: _isLoading
                   ? const SizedBox(
                       width: 20,
                       height: 20,
@@ -425,28 +807,15 @@ class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
                   : Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(
-                          _phase == _SetupPhase.connected
-                              ? Icons.check_circle
-                              : _phase == _SetupPhase.error
-                                  ? Icons.error
-                                  : Icons.link,
-                          size: 20,
-                        ),
+                        const Icon(Icons.login, size: 18),
                         const SizedBox(width: 8),
                         Text(
-                          _phase == _SetupPhase.connected
-                              ? 'Connected'
-                              : _phase == _SetupPhase.error
-                                  ? 'Invalid Address'
-                                  : _phase == _SetupPhase.needsPairing
-                                      ? 'Pair Required'
-                                      : 'Connect',
+                          _isRegistering ? 'CREATE ACCOUNT' : 'INITIATE LINK',
                           style: const TextStyle(
+                            fontSize: 12,
                             fontFamily: 'JetBrains Mono',
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
-                            letterSpacing: 1,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 1.5,
                           ),
                         ),
                       ],
@@ -458,138 +827,203 @@ class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
     );
   }
 
-  Widget _buildPairButton() {
-    if (_phase == _SetupPhase.connected) return const SizedBox.shrink();
+  // ── Device Discovery ───────────────────────────────────────────────────
 
-    return SizedBox(
+  Widget _buildDiscoveringCard() {
+    return Container(
       width: double.infinity,
-      height: 44,
-      child: OutlinedButton.icon(
-        onPressed: _isConnecting ? null : _fetchPairingCode,
-        icon: const Icon(Icons.qr_code_scanner, size: 18),
-        label: const Text(
-          'PAIR WITH CODE',
-          style: TextStyle(
-            fontFamily: 'JetBrains Mono',
-            fontSize: 13,
-            fontWeight: FontWeight.w500,
-            letterSpacing: 1,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Stitch.container,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Stitch.outlineVariant.withValues(alpha: 0.5)),
+      ),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Stitch.secondary,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Text(
+                'Scanning local subnet...',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontFamily: 'JetBrains Mono',
+                  color: Stitch.onSurfaceVariant,
+                ),
+              ),
+            ],
           ),
-        ),
-        style: OutlinedButton.styleFrom(
-          foregroundColor: Stitch.primary,
-          side: BorderSide(
-            color: Stitch.outlineVariant,
-            width: 1,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDeviceList() {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: Stitch.container,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Stitch.outlineVariant.withValues(alpha: 0.5)),
+      ),
+      child: Column(
+        children: [
+          // Header
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: const BoxDecoration(
+              border: Border(
+                bottom: BorderSide(color: Stitch.outlineVariant, width: 0.5),
+              ),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.radar, size: 18, color: Stitch.secondary),
+                const SizedBox(width: 8),
+                Text(
+                  'PAIRED DEVICES',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontFamily: 'JetBrains Mono',
+                    fontWeight: FontWeight.w700,
+                    color: Stitch.secondary,
+                    letterSpacing: 1.5,
+                  ),
+                ),
+                const Spacer(),
+                const Icon(Icons.sync, size: 16, color: Stitch.secondary),
+              ],
+            ),
           ),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
+
+          // Devices
+          if (_devices.isEmpty)
+            Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                children: [
+                  Icon(Icons.desktop_windows,
+                      size: 32, color: Stitch.onSurfaceVariant.withValues(alpha: 0.5)),
+                  const SizedBox(height: 12),
+                  Text(
+                    'No devices found',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontFamily: 'JetBrains Mono',
+                      color: Stitch.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Make sure your desktop is running\nwith Supabase configured',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Stitch.onSurfaceVariant.withValues(alpha: 0.7),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else
+            ..._devices.map((device) => _buildDeviceTile(device)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDeviceTile(DeviceInfo device) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: _isLoading ? null : () => _pairWithDevice(device),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: const BoxDecoration(
+            border: Border(
+              bottom: BorderSide(color: Stitch.outlineVariant, width: 0.5),
+            ),
+          ),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Stitch.surfaceLowest,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Stitch.outlineVariant.withValues(alpha: 0.5)),
+                ),
+                child: Icon(
+                  device.platform == 'windows'
+                      ? Icons.desktop_windows
+                      : device.platform == 'macos'
+                          ? Icons.laptop_mac
+                          : Icons.computer,
+                  size: 20,
+                  color: Stitch.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      device.deviceName,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                        color: Stitch.onSurface,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${device.displayPlatform} • ${device.apiHost ?? ""}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontFamily: 'JetBrains Mono',
+                        fontWeight: FontWeight.w500,
+                        color: Stitch.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right, size: 20, color: Stitch.onSurfaceVariant),
+            ],
           ),
         ),
       ),
     );
   }
 
-  Widget _buildPairingCodeEntry() {
-    if (_phase != _SetupPhase.showingCode) return const SizedBox.shrink();
+  // ── Manual Toggle ──────────────────────────────────────────────────────
 
-    return Container(
-      width: double.infinity,
-      constraints: const BoxConstraints(maxWidth: 400),
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Stitch.container,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: Stitch.primary.withValues(alpha: 0.3),
-          width: 1,
-        ),
-      ),
-      child: Column(
+  Widget _buildManualToggle() {
+    return GestureDetector(
+      onTap: () => setState(() => _showManualEntry = !_showManualEntry),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.qr_code, size: 40, color: Stitch.primary),
-          const SizedBox(height: 12),
+          Icon(Icons.settings_ethernet, size: 14, color: Stitch.primary),
+          const SizedBox(width: 6),
           Text(
-            _pairingCode ?? '------',
-            style: const TextStyle(
-              fontSize: 32,
+            _showManualEntry ? 'Hide manual options' : 'Manual Configuration Link',
+            style: TextStyle(
+              fontSize: 12,
               fontFamily: 'JetBrains Mono',
               fontWeight: FontWeight.w700,
               color: Stitch.primary,
-              letterSpacing: 8,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Enter this code on the desktop',
-            style: TextStyle(
-              fontSize: 12,
-              color: Stitch.onSurfaceVariant.withValues(alpha: 0.7),
-            ),
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: _codeController,
-            style: const TextStyle(
-              fontFamily: 'JetBrains Mono',
-              fontSize: 18,
-              letterSpacing: 4,
-              color: Stitch.onSurface,
-            ),
-            decoration: InputDecoration(
-              hintText: 'Enter code',
-              hintStyle: TextStyle(
-                color: Stitch.onSurfaceVariant.withValues(alpha: 0.5),
-              ),
-              filled: true,
-              fillColor: Stitch.surface,
-              contentPadding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-                borderSide: BorderSide.none,
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(8),
-                borderSide: const BorderSide(color: Stitch.primary),
-              ),
-            ),
-            textInputAction: TextInputAction.go,
-            textCapitalization: TextCapitalization.characters,
-            onSubmitted: (_) => _exchangeCode(),
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            height: 44,
-            child: ElevatedButton(
-              onPressed: _isExchanging ? null : _exchangeCode,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Stitch.primary,
-                foregroundColor: Stitch.onPrimary,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                elevation: 0,
-              ),
-              child: _isExchanging
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Stitch.onPrimary,
-                      ),
-                    )
-                  : const Text(
-                      'EXCHANGE',
-                      style: TextStyle(
-                        fontFamily: 'JetBrains Mono',
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500,
-                        letterSpacing: 1,
-                      ),
-                    ),
+              letterSpacing: 1,
             ),
           ),
         ],
@@ -598,11 +1032,100 @@ class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
   }
 }
 
-enum _SetupPhase {
-  input,
-  connecting,
-  connected,
-  needsPairing,
-  showingCode,
-  error,
+// ─── Auth Field ─────────────────────────────────────────────────────────────
+
+class _AuthField extends StatefulWidget {
+  const _AuthField({
+    required this.label,
+    required this.icon,
+    required this.controller,
+    required this.hint,
+    this.obscure = false,
+    this.keyboardType,
+    this.textInputAction,
+    this.onSubmitted,
+  });
+
+  final String label;
+  final IconData icon;
+  final TextEditingController controller;
+  final String hint;
+  final bool obscure;
+  final TextInputType? keyboardType;
+  final TextInputAction? textInputAction;
+  final ValueChanged<String>? onSubmitted;
+
+  @override
+  State<_AuthField> createState() => _AuthFieldState();
+}
+
+class _AuthFieldState extends State<_AuthField> {
+  bool _obscured = true;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          widget.label,
+          style: TextStyle(
+            fontSize: 11,
+            fontFamily: 'JetBrains Mono',
+            fontWeight: FontWeight.w700,
+            color: Stitch.onSurfaceVariant,
+            letterSpacing: 1.5,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          decoration: BoxDecoration(
+            color: Stitch.surfaceLowest,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Stitch.outlineVariant.withValues(alpha: 0.5)),
+          ),
+          child: Row(
+            children: [
+              Icon(widget.icon, size: 18, color: Stitch.onSurfaceVariant),
+              const SizedBox(width: 10),
+              Expanded(
+                child: TextField(
+                  controller: widget.controller,
+                  obscureText: widget.obscure && _obscured,
+                  style: const TextStyle(
+                    fontFamily: 'JetBrains Mono',
+                    fontSize: 14,
+                    color: Stitch.onSurface,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: widget.hint,
+                    hintStyle: TextStyle(
+                      fontFamily: 'JetBrains Mono',
+                      fontSize: 14,
+                      color: Stitch.onSurfaceVariant.withValues(alpha: 0.5),
+                    ),
+                    border: InputBorder.none,
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                  keyboardType: widget.keyboardType,
+                  textInputAction: widget.textInputAction,
+                  onSubmitted: widget.onSubmitted,
+                ),
+              ),
+              if (widget.obscure)
+                GestureDetector(
+                  onTap: () => setState(() => _obscured = !_obscured),
+                  child: Icon(
+                    _obscured ? Icons.visibility : Icons.visibility_off,
+                    size: 18,
+                    color: Stitch.onSurfaceVariant,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
 }

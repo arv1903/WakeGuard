@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../services/monitoring_client.dart';
 import '../theme.dart';
+import '../utils/safety_grading.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
@@ -671,19 +672,21 @@ class _RecentTripsTable extends StatelessWidget {
                 final durSec = (dur % 60).floor();
                 final avgAtt =
                     (trip['avg_attention'] as num?)?.toDouble() ?? 100.0;
-                final score =
-                    (trip['safety_score'] as num?)?.toDouble() ?? 100.0;
+                final score = safetyScoreFrom(trip);
                 final sid = trip['session_id'] as String? ?? 'unknown';
                 final shortSid = sid.length > 8 ? sid.substring(0, 8) : sid;
-                final scoreColor = score >= 80
-                    ? AppColors.focusedGreen
-                    : score >= 60
-                        ? AppColors.alertAmber
-                        : AppColors.alertRed;
+                final scoreColor = score == null
+                    ? AppColors.textMuted
+                    : switch (gradeSafetyScore(score).band) {
+                        SafetyBand.good => AppColors.focusedGreen,
+                        SafetyBand.fair => AppColors.alertAmber,
+                        SafetyBand.poor => AppColors.alertRed,
+                      };
+                final scoreText = score == null ? '—/100' : '${score.round()}/100';
                 return _TripRow(
                   route: shortSid,
                   duration: '${durMin}m ${durSec}s',
-                  score: '${score.toInt()}/100',
+                  score: scoreText,
                   scoreColor: scoreColor,
                   attention: '${avgAtt.toStringAsFixed(0)}/100',
                   onTap: () => onNavigate?.call(1),

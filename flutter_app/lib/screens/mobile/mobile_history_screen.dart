@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../services/monitoring_client.dart';
 import '../../theme.dart';
+import '../../utils/safety_grading.dart';
 
 /// Mobile trip history screen matching the Stitch "History" mockup.
 ///
@@ -23,13 +24,6 @@ class _MobileHistoryScreenState extends State<MobileHistoryScreen> {
   bool _loading = true;
   String? _error;
 
-  // Filters
-  bool _showFilters = false;
-  DateTime? _dateFrom;
-  DateTime? _dateTo;
-  double _minSafety = 0;
-  double _maxSafety = 100;
-
   @override
   void initState() {
     super.initState();
@@ -37,54 +31,20 @@ class _MobileHistoryScreenState extends State<MobileHistoryScreen> {
   }
 
   Future<void> _loadTrips() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+    setState(() { _loading = true; _error = null; });
     try {
       final trips = await widget.client.fetchTripHistory();
-      if (mounted) {
-        setState(() {
-          _trips = trips;
-          _loading = false;
-        });
-      }
+      if (mounted) setState(() { _trips = trips; _loading = false; });
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _error = e.toString();
-          _loading = false;
-        });
-      }
+      if (mounted) setState(() { _error = e.toString(); _loading = false; });
     }
   }
 
-  /// Parse [started_at] which may be a unix timestamp (num) or ISO string.
   DateTime? _parseStartedAt(dynamic value) {
     if (value == null) return null;
     if (value is num) return DateTime.fromMillisecondsSinceEpoch((value * 1000).toInt());
     if (value is String) return DateTime.tryParse(value);
     return null;
-  }
-
-  List<Map<String, dynamic>> get _filteredTrips {
-    return _trips.where((trip) {
-      final score = (trip['safety_score'] as num?)?.toDouble() ?? 0;
-      if (score < _minSafety || score > _maxSafety) return false;
-
-      final started = _parseStartedAt(trip['started_at']);
-      if (started != null) {
-        if (_dateFrom != null && started.isBefore(_dateFrom!)) return false;
-        if (_dateTo != null && started.isAfter(_dateTo!)) return false;
-      }
-      return true;
-    }).toList();
-  }
-
-  Color _scoreColor(double score) {
-    if (score >= 80) return Stitch.secondary;
-    if (score >= 50) return Stitch.tertiary;
-    return Stitch.error;
   }
 
   String _formatDuration(num? seconds) {
@@ -96,17 +56,23 @@ class _MobileHistoryScreenState extends State<MobileHistoryScreen> {
     return '${m}m';
   }
 
-  String _formatDate(dynamic value) {
+  String _formatDateShort(dynamic value) {
     final dt = _parseStartedAt(value);
     if (dt == null) return '—';
-    final months = [
-      '', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-    ];
-    final hour = dt.hour % 12 == 0 ? 12 : dt.hour % 12;
-    final amPm = dt.hour < 12 ? 'AM' : 'PM';
-    final mm = dt.minute.toString().padLeft(2, '0');
-    return '${months[dt.month]} ${dt.day}, ${dt.year} • $hour:$mm $amPm';
+    const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+    return '${months[dt.month - 1]} ${dt.day}';
+  }
+
+  String _formatTimeRange(dynamic startedAt, num? durationS) {
+    final dt = _parseStartedAt(startedAt);
+    if (dt == null) return '—';
+    final end = durationS != null ? dt.add(Duration(seconds: durationS.toInt())) : dt;
+    String fmt(DateTime t) {
+      final h = t.hour % 12 == 0 ? 12 : t.hour % 12;
+      final m = t.minute.toString().padLeft(2, '0');
+      return '$h:$m';
+    }
+    return '${fmt(dt)} - ${fmt(end)}';
   }
 
   @override
@@ -117,18 +83,12 @@ class _MobileHistoryScreenState extends State<MobileHistoryScreen> {
       color: Stitch.background,
       child: Column(
         children: [
-          // Filter bar
-          _buildFilterBar(),
-          // Filter panel (collapsible)
-          if (_showFilters) _buildFilterPanel(),
-          // Trip list
           Expanded(
             child: _loading
-                ? const Center(
-                    child: CircularProgressIndicator(color: Stitch.primary))
+                ? const Center(child: CircularProgressIndicator(color: Stitch.primary))
                 : _error != null
                     ? _buildError()
-                    : _filteredTrips.isEmpty
+                    : _trips.isEmpty
                         ? _buildEmpty()
                         : RefreshIndicator(
                             onRefresh: _loadTrips,
@@ -136,10 +96,11 @@ class _MobileHistoryScreenState extends State<MobileHistoryScreen> {
                             backgroundColor: Stitch.container,
                             child: ListView.builder(
                               padding: EdgeInsets.fromLTRB(20, 8, 20, 20 + bottomPad),
-                              itemCount: _filteredTrips.length,
-                              itemBuilder: (_, i) => _buildTripCard(
-                                _filteredTrips[i],
-                              ),
+                              itemCount: _trips.length + 1, // +1 for header
+                              itemBuilder: (_, i) {
+                                if (i == 0) return _buildHeader();
+                                return _buildTripCard(_trips[i - 1]);
+                              },
                             ),
                           ),
           ),
@@ -148,216 +109,45 @@ class _MobileHistoryScreenState extends State<MobileHistoryScreen> {
     );
   }
 
-  Widget _buildFilterBar() {
-    final activeCount = [
-      _dateFrom != null,
-      _dateTo != null,
-      _minSafety > 0 || _maxSafety < 100,
-    ].where((e) => e).length;
-
+  Widget _buildHeader() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+      padding: const EdgeInsets.only(bottom: 16),
       child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // Filter toggle
-          GestureDetector(
-            onTap: () => setState(() => _showFilters = !_showFilters),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: Stitch.container,
-                borderRadius: BorderRadius.circular(20),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Log Archive',
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.w600,
+                  color: Stitch.onSurface,
+                  letterSpacing: -0.5,
+                ),
               ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.filter_list,
-                      size: 16, color: Stitch.onSurfaceVariant),
-                  const SizedBox(width: 6),
-                  const Text(
-                    'Filters',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontFamily: 'JetBrains Mono',
-                      fontWeight: FontWeight.w500,
-                      color: Stitch.onSurfaceVariant,
-                    ),
-                  ),
-                  if (activeCount > 0) ...[
-                    const SizedBox(width: 6),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: Stitch.primary,
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Text(
-                        '$activeCount',
-                        style: const TextStyle(
-                          fontSize: 10,
-                          fontFamily: 'JetBrains Mono',
-                          fontWeight: FontWeight.w700,
-                          color: Stitch.onPrimary,
-                        ),
-                      ),
-                    ),
-                  ],
-                  const SizedBox(width: 4),
-                  AnimatedRotation(
-                    turns: _showFilters ? 0.5 : 0,
-                    duration: const Duration(milliseconds: 200),
-                    child: const Icon(Icons.expand_more,
-                        size: 16, color: Stitch.onSurfaceVariant),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const Spacer(),
-          if (activeCount > 0)
-            GestureDetector(
-              onTap: () => setState(() {
-                _dateFrom = null;
-                _dateTo = null;
-                _minSafety = 0;
-                _maxSafety = 100;
-              }),
-              child: const Text(
-                'Clear',
+              const SizedBox(height: 4),
+              Text(
+                '${_trips.length} SESSIONS',
                 style: TextStyle(
                   fontSize: 12,
                   fontFamily: 'JetBrains Mono',
                   fontWeight: FontWeight.w500,
-                  color: Stitch.primary,
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFilterPanel() {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Stitch.container,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Date range
-          const Text(
-            'DATE RANGE',
-            style: TextStyle(
-              fontSize: 11,
-              fontFamily: 'JetBrains Mono',
-              fontWeight: FontWeight.w500,
-              color: Stitch.onSurfaceVariant,
-              letterSpacing: 1.5,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: _DateButton(
-                  label: _dateFrom != null
-                      ? '${_dateFrom!.month}/${_dateFrom!.day}/${_dateFrom!.year}'
-                      : 'From',
-                  onTap: () async {
-                    final picked = await showDatePicker(
-                      context: context,
-                      initialDate: _dateFrom ?? DateTime.now(),
-                      firstDate: DateTime(2020),
-                      lastDate: DateTime.now(),
-                      builder: (context, child) {
-                        return Theme(
-                          data: Theme.of(context).copyWith(
-                            colorScheme: const ColorScheme.dark(
-                              primary: Stitch.primary,
-                              surface: Stitch.container,
-                              onSurface: Stitch.onSurface,
-                            ),
-                          ),
-                          child: child!,
-                        );
-                      },
-                    );
-                    if (picked != null) setState(() => _dateFrom = picked);
-                  },
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _DateButton(
-                  label: _dateTo != null
-                      ? '${_dateTo!.month}/${_dateTo!.day}/${_dateTo!.year}'
-                      : 'To',
-                  onTap: () async {
-                    final picked = await showDatePicker(
-                      context: context,
-                      initialDate: _dateTo ?? DateTime.now(),
-                      firstDate: DateTime(2020),
-                      lastDate: DateTime.now(),
-                      builder: (context, child) {
-                        return Theme(
-                          data: Theme.of(context).copyWith(
-                            colorScheme: const ColorScheme.dark(
-                              primary: Stitch.primary,
-                              surface: Stitch.container,
-                              onSurface: Stitch.onSurface,
-                            ),
-                          ),
-                          child: child!,
-                        );
-                      },
-                    );
-                    if (picked != null) setState(() => _dateTo = picked);
-                  },
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          // Safety score range
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text(
-                'SAFETY SCORE',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontFamily: 'JetBrains Mono',
-                  fontWeight: FontWeight.w500,
-                  color: Stitch.onSurfaceVariant,
+                  color: Stitch.onSurfaceVariant.withValues(alpha: 0.7),
                   letterSpacing: 1.5,
                 ),
               ),
-              Text(
-                '${_minSafety.round()} – ${_maxSafety.round()}',
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontFamily: 'JetBrains Mono',
-                  fontWeight: FontWeight.w500,
-                  color: Stitch.primary,
-                ),
-              ),
             ],
           ),
-          const SizedBox(height: 4),
-          RangeSlider(
-            values: RangeValues(_minSafety, _maxSafety),
-            min: 0,
-            max: 100,
-            divisions: 20,
-            activeColor: Stitch.primary,
-            inactiveColor: Stitch.containerHighest,
-            onChanged: (v) =>
-                setState(() { _minSafety = v.start; _maxSafety = v.end; }),
+          Container(
+            width: 40,
+            height: 40,
+            decoration: const BoxDecoration(
+              color: Stitch.containerHigh,
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.filter_list, size: 18, color: Stitch.primary),
           ),
         ],
       ),
@@ -365,155 +155,164 @@ class _MobileHistoryScreenState extends State<MobileHistoryScreen> {
   }
 
   Widget _buildTripCard(Map<String, dynamic> trip) {
-    final score = (trip['safety_score'] as num?)?.toDouble() ?? 0;
-    final color = _scoreColor(score);
+    final scoreValue = safetyScoreFrom(trip);
+    final color = scoreValue == null
+        ? Stitch.onSurfaceVariant
+        : gradeSafetyScore(scoreValue).color;
     final duration = _formatDuration(trip['duration_s']);
-    final attention = (trip['avg_attention'] as num?)?.round() ?? 0;
+    final dateShort = _formatDateShort(trip['started_at']);
+    final timeRange = _formatTimeRange(trip['started_at'], trip['duration_s'] as num?);
+    final label = trip['label'] as String? ?? 'Driving Session';
     final alerts = (trip['alert_count'] as num?)?.toInt() ?? 0;
-    final dateStr = _formatDate(trip['started_at']);
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
-      child: Container(
-        decoration: BoxDecoration(
-          color: Stitch.container,
+      child: Material(
+        color: Stitch.surfaceLow,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          // All trip data is shown inline; tapping opens nothing yet, so the
+          // card is honestly static until a detail view exists.
+          onTap: null,
           borderRadius: BorderRadius.circular(12),
-        ),
-        child: IntrinsicHeight(
-          child: Row(
-            children: [
-              // Left accent bar
-              Container(
-                width: 4,
-                decoration: BoxDecoration(
-                  color: color,
-                  borderRadius: const BorderRadius.only(
-                    topLeft: Radius.circular(12),
-                    bottomLeft: Radius.circular(12),
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: IntrinsicHeight(
+              child: Row(
+                children: [
+                  // Left accent bar
+                  Container(
+                    width: 4,
+                    decoration: BoxDecoration(
+                      color: color,
+                      borderRadius: const BorderRadius.only(
+                        topLeft: Radius.circular(12),
+                        bottomLeft: Radius.circular(12),
+                      ),
+                    ),
                   ),
-                ),
-              ),
-              // Content
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Header row
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  // Content
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Row(
                         children: [
                           Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
+                                // Date and time
+                                Row(
+                                  children: [
+                                    Text(
+                                      dateShort.toUpperCase(),
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        fontFamily: 'JetBrains Mono',
+                                        fontWeight: FontWeight.w700,
+                                        color: Stitch.onSurface,
+                                        letterSpacing: 1,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Container(
+                                      width: 4,
+                                      height: 4,
+                                      decoration: const BoxDecoration(
+                                        color: Stitch.onSurfaceVariant,
+                                        shape: BoxShape.circle,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      timeRange,
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        fontFamily: 'JetBrains Mono',
+                                        fontWeight: FontWeight.w500,
+                                        color: Stitch.onSurfaceVariant,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                                // Trip name
                                 Text(
-                                  dateStr,
+                                  label,
                                   style: const TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w600,
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w500,
                                     color: Stitch.onSurface,
                                   ),
                                 ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  '${trip['label'] ?? ''}',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Stitch.onSurfaceVariant,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
+                                const SizedBox(height: 8),
+                                // Stats
+                                Row(
+                                  children: [
+                                    Icon(Icons.schedule, size: 14, color: Stitch.onSurfaceVariant),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      duration,
+                                      style: const TextStyle(
+                                        fontSize: 14,
+                                        fontFamily: 'JetBrains Mono',
+                                        fontWeight: FontWeight.w500,
+                                        color: Stitch.onSurfaceVariant,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 16),
+                                    if (alerts > 0) ...[
+                                      Icon(Icons.warning_amber, size: 14, color: Stitch.error.withValues(alpha: 0.7)),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        '$alerts alerts',
+                                        style: TextStyle(
+                                          fontSize: 14,
+                                          fontFamily: 'JetBrains Mono',
+                                          fontWeight: FontWeight.w500,
+                                          color: Stitch.error.withValues(alpha: 0.7),
+                                        ),
+                                      ),
+                                    ],
+                                  ],
                                 ),
                               ],
                             ),
                           ),
+                          // Score
                           Column(
                             crossAxisAlignment: CrossAxisAlignment.end,
                             children: [
                               Text(
-                                '${score.round()}',
+                                scoreValue?.round().toString() ?? '—',
                                 style: TextStyle(
-                                  fontSize: 20,
+                                  fontSize: 24,
+                                  fontFamily: 'JetBrains Mono',
                                   fontWeight: FontWeight.w700,
                                   color: color,
                                 ),
                               ),
-                              const Text(
-                                'Safety Score',
+                              Text(
+                                'RATING',
                                 style: TextStyle(
                                   fontSize: 10,
                                   fontFamily: 'JetBrains Mono',
-                                  fontWeight: FontWeight.w500,
-                                  color: Stitch.onSurfaceVariant,
+                                  fontWeight: FontWeight.w700,
+                                  color: color.withValues(alpha: 0.7),
+                                  letterSpacing: 1.5,
                                 ),
                               ),
                             ],
                           ),
                         ],
                       ),
-                      const SizedBox(height: 8),
-                      // Score bar
-                      Container(
-                        height: 4,
-                        decoration: BoxDecoration(
-                          color: Stitch.surface,
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                        child: FractionallySizedBox(
-                          widthFactor: (score / 100).clamp(0.0, 1.0),
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: color,
-                              borderRadius: BorderRadius.circular(2),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: color.withValues(alpha: 0.4),
-                                  blurRadius: 8,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      // Stats grid
-                      Row(
-                        children: [
-                          _StatChip(
-                            icon: Icons.schedule,
-                            label: 'Duration',
-                            value: duration,
-                            color: Stitch.primary,
-                          ),
-                          const SizedBox(width: 12),
-                          _StatChip(
-                            icon: Icons.visibility,
-                            label: 'Attention',
-                            value: '$attention%',
-                            color: attention >= 80
-                                ? Stitch.secondary
-                                : Stitch.tertiary,
-                          ),
-                          const SizedBox(width: 12),
-                          _StatChip(
-                            icon: Icons.notifications,
-                            label: 'Alerts',
-                            value: '$alerts',
-                            color: alerts == 0
-                                ? Stitch.secondary
-                                : alerts <= 3
-                                    ? Stitch.tertiary
-                                    : Stitch.error,
-                          ),
-                        ],
-                      ),
-                    ],
+                    ),
                   ),
-                ),
+                ],
               ),
-            ],
+            ),
           ),
         ),
       ),
@@ -525,26 +324,30 @@ class _MobileHistoryScreenState extends State<MobileHistoryScreen> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
-            Icons.history,
-            size: 64,
-            color: Stitch.onSurfaceVariant.withValues(alpha: 0.3),
+          // Cyberpunk car SVG illustration
+          SizedBox(
+            width: 200,
+            height: 200,
+            child: CustomPaint(
+              painter: _EmptyCarPainter(),
+            ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 24),
           const Text(
-            'No trips recorded yet',
+            'No Sessions Recorded',
             style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w500,
-              color: Stitch.onSurfaceVariant,
+              fontSize: 18,
+              fontWeight: FontWeight.w600,
+              color: Stitch.onSurface,
             ),
           ),
           const SizedBox(height: 8),
           Text(
-            'Trip history will appear here after driving sessions',
+            'Your driving history will appear\nhere once you complete a trip.',
+            textAlign: TextAlign.center,
             style: TextStyle(
-              fontSize: 13,
-              color: Stitch.onSurfaceVariant.withValues(alpha: 0.6),
+              fontSize: 14,
+              color: Stitch.onSurfaceVariant.withValues(alpha: 0.7),
             ),
           ),
         ],
@@ -559,117 +362,82 @@ class _MobileHistoryScreenState extends State<MobileHistoryScreen> {
         children: [
           Icon(Icons.cloud_off, size: 48, color: Stitch.error.withValues(alpha: 0.5)),
           const SizedBox(height: 16),
-          Text(
-            'Unable to load trips',
-            style: TextStyle(
-              fontSize: 16,
-              color: Stitch.onSurfaceVariant,
-            ),
-          ),
+          const Text('Unable to load trips',
+              style: TextStyle(fontSize: 16, color: Stitch.onSurfaceVariant)),
           const SizedBox(height: 12),
-          TextButton(
-            onPressed: _loadTrips,
-            child: const Text('Retry'),
-          ),
+          TextButton(onPressed: _loadTrips, child: const Text('Retry')),
         ],
       ),
     );
   }
 }
 
-// ─── Date Button ─────────────────────────────────────────────────────────────
+// ─── Empty State Car Painter ────────────────────────────────────────────────
 
-class _DateButton extends StatelessWidget {
-  const _DateButton({required this.label, required this.onTap});
+class _EmptyCarPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Stitch.containerHighest
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3;
 
-  final String label;
-  final VoidCallback onTap;
+    final fillPaint = Paint()
+      ..color = Stitch.containerHighest.withValues(alpha: 0.2)
+      ..style = PaintingStyle.fill;
+
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+
+    // Car body
+    final bodyPath = Path();
+    bodyPath.moveTo(cx - 60, cy + 20);
+    bodyPath.lineTo(cx - 50, cy - 10);
+    bodyPath.lineTo(cx - 20, cy - 30);
+    bodyPath.lineTo(cx + 20, cy - 30);
+    bodyPath.lineTo(cx + 50, cy - 10);
+    bodyPath.lineTo(cx + 60, cy + 20);
+    bodyPath.close();
+
+    canvas.drawPath(bodyPath, fillPaint);
+    canvas.drawPath(bodyPath, paint);
+
+    // Roof line
+    canvas.drawLine(
+      Offset(cx - 50, cy - 10),
+      Offset(cx - 20, cy - 30),
+      paint,
+    );
+    canvas.drawLine(
+      Offset(cx + 20, cy - 30),
+      Offset(cx + 50, cy - 10),
+      paint,
+    );
+
+    // Wheels
+    final wheelPaint = Paint()
+      ..color = Stitch.containerHighest
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3;
+
+    canvas.drawCircle(Offset(cx - 35, cy + 20), 12, fillPaint);
+    canvas.drawCircle(Offset(cx - 35, cy + 20), 12, wheelPaint);
+    canvas.drawCircle(Offset(cx + 35, cy + 20), 12, fillPaint);
+    canvas.drawCircle(Offset(cx + 35, cy + 20), 12, wheelPaint);
+
+    // Scanner beam
+    final beamPaint = Paint()
+      ..color = Stitch.primary.withValues(alpha: 0.5)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+
+    final beamPath = Path();
+    beamPath.moveTo(cx - 70, cy + 40);
+    beamPath.lineTo(cx + 70, cy + 40);
+    canvas.drawPath(beamPath, beamPaint);
+  }
 
   @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        decoration: BoxDecoration(
-          color: Stitch.surface,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: Stitch.outlineVariant.withValues(alpha: 0.5)),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 13,
-                fontFamily: 'JetBrains Mono',
-                color: label == 'From' || label == 'To'
-                    ? Stitch.onSurfaceVariant.withValues(alpha: 0.5)
-                    : Stitch.onSurface,
-              ),
-            ),
-            Icon(Icons.calendar_today,
-                size: 14, color: Stitch.onSurfaceVariant.withValues(alpha: 0.5)),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ─── Stat Chip ───────────────────────────────────────────────────────────────
-
-class _StatChip extends StatelessWidget {
-  const _StatChip({
-    required this.icon,
-    required this.label,
-    required this.value,
-    required this.color,
-  });
-
-  final IconData icon;
-  final String label;
-  final String value;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: Row(
-        children: [
-          Icon(icon, size: 14, color: color),
-          const SizedBox(width: 4),
-          Flexible(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  style: const TextStyle(
-                    fontSize: 10,
-                    fontFamily: 'JetBrains Mono',
-                    fontWeight: FontWeight.w500,
-                    color: Stitch.onSurfaceVariant,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                Text(
-                  value,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: Stitch.onSurface,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

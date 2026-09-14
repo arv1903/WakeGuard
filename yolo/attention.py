@@ -5,11 +5,54 @@ Attention scoring, generic accumulator-based timer state machine,
 and short helper utils.
 """
 
+import time
+
 from .config import (
     AttentionYawWeight,
     AttentionPitchWeight,
     AttentionEyeWeight,
 )
+
+
+class StartupCountdown:
+    """Wall-clock grace timer that gates evaluation at session start.
+
+    Counts down in real time instead of accumulating per-frame deltas, so
+    the 3-2-1 period always lasts exactly ``duration`` seconds regardless of
+    how slowly or irregularly the display loop ticks (CPU-bound inference
+    can tick at only ~2 Hz). If ticks stall, ``remaining()`` simply holds
+    steady and evaluation stays suspended.
+
+    A duration of 0 disables the grace period entirely.
+    """
+
+    def __init__(self, duration: float = 0.0):
+        self._duration = 0.0
+        self._end_at: float | None = None
+        self.configure(duration)
+
+    def configure(self, duration: float) -> None:
+        """Set the grace length (0 disables). Safe to call at any time."""
+        self._duration = max(0.0, float(duration))
+
+    def start(self, now: float | None = None) -> None:
+        """Begin the countdown (idempotent — restarts the clock)."""
+        now = time.monotonic() if now is None else now
+        self._end_at = now + self._duration if self._duration > 0 else None
+
+    def reset(self) -> None:
+        """Cancel the countdown (called between trips)."""
+        self._end_at = None
+
+    def remaining(self, now: float | None = None) -> float:
+        """Seconds left until the grace period ends (0 when inactive)."""
+        if self._end_at is None:
+            return 0.0
+        now = time.monotonic() if now is None else now
+        return max(0.0, self._end_at - now)
+
+    def active(self, now: float | None = None) -> bool:
+        return self.remaining(now) > 0.0
 
 
 class AlertLatch:
@@ -30,6 +73,11 @@ class AlertLatch:
             if self._clean_accum >= self._clear_seconds:
                 self._active = False
         return self._active
+
+    def reset(self) -> None:
+        """Clear any latched state (called between trips/sessions)."""
+        self._clean_accum = 0.0
+        self._active = False
 
 
 def ComputeAttentionScore(DrowsyConf, Pitch, Yaw):
@@ -83,3 +131,14 @@ def UpdateTimer(Condition, Accumulated, DeltaTime, RequiredDuration, Freeze=Fals
 
     new_acc = Accumulated + DeltaTime
     return new_acc, new_acc >= RequiredDuration
+
+
+def CapDeltaTime(DeltaTime, Max=0.25):
+    """Bound one frame's time step for the accumulator timers.
+
+    A stall (e.g. the long idle before a session's first frame) must never
+    count as sustained condition time, or an alert could fire instantly when
+    the condition happens to be true on the very next frame. Negative deltas
+    are treated as zero.
+    """
+    return min(max(DeltaTime, 0.0), Max)

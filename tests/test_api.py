@@ -7,7 +7,8 @@ from urllib.request import Request, urlopen
 import numpy as np
 import pytest
 
-from yolo.api import MonitoringApi
+from yolo import api as api_module
+from yolo.api import MonitoringApi, _primary_lan_address
 from yolo.monitoring import MonitoringSnapshot, MonitoringStore
 from yolo.pairing import PairingManager
 
@@ -51,7 +52,7 @@ def test_health_and_status(api):
     assert status == 200
     assert json.loads(raw_health)["status"] == "ok"
     assert json.loads(raw_status)["attention"] == 91.0
-    assert json.loads(raw_status)["schema_version"] == 2
+    assert json.loads(raw_status)["schema_version"] == 3
     assert json.loads(raw_status)["server_id"]
 
 
@@ -126,6 +127,122 @@ def test_pairing_revoke_requires_a_companion_token():
         assert invalid.value.code == 401
     finally:
         service.stop()
+
+
+def test_error_responses_drain_request_body_before_closing():
+    """Rejecting a POST before reading its body must not abort the TCP
+    stream: on Windows the unread body triggers an RST that hides the
+    response from the client (WinError 10053)."""
+    service = MonitoringApi(port=0, auth_token="master")
+    service.start()
+    try:
+        base = f"http://127.0.0.1:{service.port}"
+        for _ in range(10):
+            with pytest.raises(HTTPError) as exc:
+                _post(base, "/api/v1/pairing/revoke", {"x": "y"}, headers={
+                    "Authorization": "Bearer master",
+                })
+            assert exc.value.code == 400
+    finally:
+        service.stop()
+
+
+def test_pairing_response_carries_routable_lan_address(monkeypatch):
+    """The QR scanner needs the desktop's LAN address — a loopback host in
+    the pairing QR makes the phone dial itself (errno 11)."""
+    monkeypatch.setattr(api_module, "_primary_lan_address",
+                        lambda: "192.168.1.10")
+    service = MonitoringApi(port=0)
+    service.start()
+    try:
+        base = f"http://127.0.0.1:{service.port}"
+        _, _, raw = _get(base, "/api/v1/pairing")
+        payload = json.loads(raw)
+        assert payload["lan_host"] == "192.168.1.10"
+        assert payload["lan_port"] == service.port
+    finally:
+        service.stop()
+
+
+def test_pairing_response_omits_lan_address_when_unresolvable(monkeypatch):
+    monkeypatch.setattr(api_module, "_primary_lan_address", lambda: None)
+    service = MonitoringApi(port=0)
+    service.start()
+    try:
+        base = f"http://127.0.0.1:{service.port}"
+        _, _, raw = _get(base, "/api/v1/pairing")
+        payload = json.loads(raw)
+        assert "lan_host" not in payload
+        assert "lan_port" not in payload
+    finally:
+        service.stop()
+
+
+def test_primary_lan_address_is_never_loopback():
+    addr = _primary_lan_address()
+    if addr is None:
+        pytest.skip("no non-loopback route available on this machine")
+    assert addr not in ("127.0.0.1", "0.0.0.0")
+
+
+def test_auth_refresh_returns_501_without_supabase(monkeypatch):
+    """The refresh route exists and degrades cleanly when Supabase is off."""
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    service = MonitoringApi(port=0)
+    service.start()
+    try:
+        base = f"http://127.0.0.1:{service.port}"
+        with pytest.raises(HTTPError) as exc:
+            _post(base, "/api/v1/auth/refresh", {"refresh_token": "abc"})
+        assert exc.value.code == 501
+    finally:
+        service.stop()
+
+
+def test_auth_refresh_requires_a_refresh_token(monkeypatch):
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    service = MonitoringApi(port=0)
+    service.start()
+    try:
+        base = f"http://127.0.0.1:{service.port}"
+        with pytest.raises(HTTPError) as exc:
+            _post(base, "/api/v1/auth/refresh", {})
+        assert exc.value.code == 400
+    finally:
+        service.stop()
+
+
+def test_pairing_tokens_survive_a_backend_restart(tmp_path):
+    """A phone must keep access after the desktop restarts — the exact
+    scenario that stranded it with 'NODE ERROR // CHECK UPLINK'."""
+    store = str(tmp_path / "pairing_tokens.json")
+
+    first = MonitoringApi(port=0, auth_token="master",
+                          pairing_store_path=store)
+    first.start()
+    base = f"http://127.0.0.1:{first.port}"
+    _, _, raw = _get(base, "/api/v1/pairing")
+    issued = _post(base, "/api/v1/pairing/exchange", {
+        "code": json.loads(raw)["code"],
+    })[1]
+    headers = {"Authorization": f"Bearer {issued['access_token']}"}
+    status, _, _ = _get(base, "/api/v1/status", headers=headers)
+    assert status == 200
+    first.stop()
+
+    second = MonitoringApi(port=first.port, auth_token="master",
+                           pairing_store_path=store)
+    second.start()
+    try:
+        base = f"http://127.0.0.1:{second.port}"
+        status, _, raw = _get(base, "/api/v1/status", headers=headers)
+        assert status == 200
+        assert json.loads(raw)["server_id"]  # genuinely a new instance
+        # The stored file never contains the raw secret.
+        with open(store, "r", encoding="utf-8") as fh:
+            assert issued["access_token"] not in fh.read()
+    finally:
+        second.stop()
 
 
 def test_pairing_exchange_is_rate_limited_after_failed_attempts():
@@ -319,9 +436,68 @@ def test_settings_command_route(api):
 
 def test_session_history_endpoint(api):
     service, _ = api
-    service.history_provider = lambda: [{"session_id": "s1", "safety_score": 95, "duration_s": 120.0}]
+    service.history_provider = lambda **kw: [{"session_id": "s1", "safety_score": 95, "duration_s": 120.0}]
     base = f"http://127.0.0.1:{service.port}"
     status, _, body = _get(base, "/api/v1/sessions/history")
     assert status == 200
     data = json.loads(body.decode("utf-8"))
     assert data["history"] == [{"session_id": "s1", "safety_score": 95, "duration_s": 120.0}]
+
+
+def test_pairing_admin_listing_and_revocation():
+    service = MonitoringApi(port=0, auth_token="master")
+    service.start()
+    try:
+        base = f"http://127.0.0.1:{service.port}"
+
+        # Pair a companion, labeled like the phone app does.
+        raw = _get(base, "/api/v1/pairing")[2].decode("utf-8")
+        code = json.loads(raw)["code"]
+        issued = _post(base, "/api/v1/pairing/exchange", {
+            "code": code,
+            "device_name": "Test Phone",
+        })[1]
+        companion = {"Authorization": f"Bearer {issued['access_token']}"}
+
+        # Admin listing shows the companion, never the master or secrets.
+        status, _, raw = _get(base, "/api/v1/pairings", headers={
+            "Authorization": "Bearer master",
+        })
+        listing = json.loads(raw)
+        assert status == 200
+        assert listing["devices"] == [{
+            "token_preview": issued["access_token"][:8],
+            "device_name": "Test Phone",
+            "issued_at": listing["devices"][0]["issued_at"],
+            "expires_at": listing["devices"][0]["expires_at"],
+        }]
+
+        # Admin listing requires the master token.
+        with pytest.raises(HTTPError) as forbidden_list:
+            _get(base, "/api/v1/pairings", headers=companion)
+        assert forbidden_list.value.code == 403
+
+        # Companion tokens must not be able to revoke others.
+        with pytest.raises(HTTPError) as forbidden:
+            _post(base, "/api/v1/pairings/revoke", {
+                "token_preview": issued["access_token"][:8],
+            }, headers=companion)
+        assert forbidden.value.code == 403
+
+        # Admin revocation by preview kills the companion token.
+        status, result = _post(base, "/api/v1/pairings/revoke", {
+            "token_preview": issued["access_token"][:8],
+        }, headers={"Authorization": "Bearer master"})
+        assert status == 200 and result["revoked"] is True
+
+        with pytest.raises(HTTPError) as dead:
+            _get(base, "/api/v1/status", headers=companion)
+        assert dead.value.code == 401
+
+        # Master token itself survives and still works.
+        status, _, _ = _get(base, "/api/v1/status", headers={
+            "Authorization": "Bearer master",
+        })
+        assert status == 200
+    finally:
+        service.stop()

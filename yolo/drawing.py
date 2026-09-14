@@ -61,6 +61,26 @@ def DrawModernBox(Frame, X1, Y1, X2, Y2, Label, Color):
                 (255, 255, 255), thickness, cv2.LINE_AA)
 
 
+def DrawYoloBoxes(Frame, Boxes, Scale=1.0):
+    """Draw every YOLO eye-state box on ``Frame`` in place.
+
+    Each box is an ``(x1, y1, x2, y2, cls_id, conf)`` tuple expressed in the
+    *inference* frame's pixel space. ``Scale`` maps box coordinates onto a
+    differently-sized canvas (e.g. after the display loop downscales a wide
+    source to ``FrameWidth``); the default 1.0 draws at native resolution.
+    Class 0 (Drowsy) is drawn red, class 1 (Alert) green — matching the
+    original inline rendering in ``main.py``.
+    """
+    def _map(coord: int) -> int:
+        return int(round(coord * Scale)) if Scale != 1.0 else coord
+
+    for x1, y1, x2, y2, cls_id, conf in Boxes:
+        label = f"{'Drowsy' if cls_id == 0 else 'Alert'} ({conf:.2f})"
+        color = (0, 0, 255) if cls_id == 0 else (0, 200, 0)
+        DrawModernBox(Frame, _map(x1), _map(y1), _map(x2), _map(y2),
+                      label, color)
+
+
 def DrawAlertOverlay(Frame, Tick, Message="DROWSINESS DETECTED!"):
     """Flash a full-frame alert overlay and message band."""
     h, w = Frame.shape[:2]

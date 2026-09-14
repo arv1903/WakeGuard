@@ -34,3 +34,20 @@ def test_perclos_half_closed():
 def test_perclos_single_closed_sample_is_one():
     p = PerclosTracker(window_seconds=10, sample_rate=2)
     assert p.update(True) == pytest.approx(1.0)
+
+
+def test_perclos_reset_drops_stale_window():
+    p = PerclosTracker(window_seconds=10, sample_rate=2)
+    for _ in range(10):
+        p.update(True)
+    p.reset()
+    # A fresh window with open samples must not inherit the old closures.
+    assert p.update(False) == pytest.approx(0.0)
+
+
+def test_ema_reset_zeroes_history():
+    ema = DrowsyEMA(alpha=0.9)
+    for _ in range(200):
+        ema.update(1.0)
+    ema.reset()
+    assert ema.update(1.0) == pytest.approx(0.1)
