@@ -151,8 +151,8 @@ Inter-thread handoff uses a **drop-old `LatestValue` slot** (see `yolo/latest.py
 ### Step 1 — Get the code
 
 ```bash
-git clone https://github.com/your-username/driver-drowsiness-detection.git
-cd driver-drowsiness-detection
+git clone https://github.com/arv1903/WakeGuard.git
+cd WakeGuard
 ```
 
 The two model files (`best.pt`, `face_landmarker.task`) and the alarm sound (`alert.mp3`) are tracked in the repository root — no separate download is needed.
@@ -231,7 +231,7 @@ python scripts/migrate_to_supabase.py --email you@example.com --password secret
 python main.py --help
 
 # Run the offline test suite (no camera needed)
-python -m pytest -q          # 184 unit tests
+python -m pytest -q          # 185 unit tests
 ```
 
 Then plug in / enable your webcam and do a short headless smoke run:
@@ -248,7 +248,7 @@ Startup diagnostics will report anything missing (models, camera, credentials) w
 python main.py
 ```
 
-Press the **start** action (or `S`-hotkey flow below); hold still and look straight ahead for the 4-second **neutral-pose calibration**, then drive. The calibration profile is saved to `profiles/driver.json` and reused on every later start — use `--calibrate` to redo it.
+In standalone mode, monitoring starts automatically: hold still and look straight ahead for the 4-second **neutral-pose calibration**, then drive. The calibration profile is saved to `profiles/driver.json` and reused on every later start — use `--calibrate` to redo it. (When running with `--api`, start and stop trips via the Flutter companion dashboard).
 
 ### Troubleshooting
 
@@ -261,17 +261,27 @@ Press the **start** action (or `S`-hotkey flow below); hold still and look strai
 | YOLO is slow (low FPS) | Set `YoloEveryN: 2` in `settings.json`, lower `CaptureWidth/Height`, or install a CUDA torch build |
 | `LAN binding requires a token` (API) | Pass `--api-token CHANGE_ME` when using `--api-host 0.0.0.0` |
 
-### Install the Flutter dashboard (optional)
+### Install & run the Flutter dashboard (optional)
 
 ```bash
 cd flutter_app
-flutter create .            # generate platform runners (first time only)
 flutter pub get
-flutter run -d windows --dart-define=API_URL=http://127.0.0.1:8765
+
+# 1. Windows desktop companion (connects to local backend):
+flutter run -d windows --dart-define=WAKEGUARD_API_TOKEN=aiai
+
+# 2. Android emulator (10.0.2.2 maps to the host's localhost):
+flutter run -d emulator-5554 --dart-define=API_URL=http://10.0.2.2:8765 --dart-define=WAKEGUARD_API_TOKEN=aiai
+
+# 3. Physical mobile device on the same LAN:
+flutter run -d <device_id> --dart-define=API_URL=http://<host_lan_ip>:8765 --dart-define=WAKEGUARD_API_TOKEN=aiai
 ```
 
-Start the backend with `python main.py --api` in a second terminal. For a **mobile companion**, set `API_URL` to the desktop's LAN address and use **Pair device** (see [Flutter Client API](#flutter-client-api-optional)).
+Start the backend in a separate terminal before running the client:
 
+```bash
+python main.py --api --api-host 0.0.0.0 --api-port 8765 --api-token aiai
+```
 ---
 
 ## 🚀 Usage
@@ -389,12 +399,22 @@ The desktop's **Companion Devices** card lists every live companion token:
 The shared Flutter client lives in [`flutter_app/`](flutter_app/). It supports responsive desktop/mobile layouts, API reconnection, stale-state detection, status gauges, a persistent MJPEG camera feed, and authenticated controls.
 
 ```bash
+# Start the backend API service (binds all interfaces with an API token)
+python main.py --api --api-host 0.0.0.0 --api-port 8765 --api-token aiai
+
+# Run Windows desktop dashboard
 cd flutter_app
 flutter pub get
-flutter run -d windows --dart-define=API_URL=http://127.0.0.1:8765
+flutter run -d windows --dart-define=WAKEGUARD_API_TOKEN=aiai
+
+# Run on Android Emulator (points to host via 10.0.2.2)
+flutter run -d emulator-5554 --dart-define=API_URL=http://10.0.2.2:8765 --dart-define=WAKEGUARD_API_TOKEN=aiai
+
+# Run on physical device connected to same Wi-Fi LAN
+flutter run -d <device_id> --dart-define=API_URL=http://<host_lan_ip>:8765 --dart-define=WAKEGUARD_API_TOKEN=aiai
 ```
 
-For a mobile companion, set `API_URL` to the backend machine's LAN address and use **Pair device** in connection settings. Reveal the code on the local desktop, then enter it on the phone; the app exchanges it for a short-lived token. Manual bearer-token entry remains available for administration. Flutter SDK validation must be run on a machine with Flutter installed.
+Passing `--dart-define=WAKEGUARD_API_TOKEN=...` pre-configures the matching bearer token for development. Alternatively, leave it out to use the in-app **Pair device** zero-touch discovery or QR code scanner workflow.
 
 ### Telegram & Location (optional)
 
@@ -537,9 +557,8 @@ $$P = \frac{TP}{TP + FP}, \qquad R = \frac{TP}{TP + FN}, \qquad F_1 = \frac{2PR}
 ---
 
 ## 🧪 Testing
-
 ```bash
-python -m pytest -q        # 184 unit tests across all modules
+python -m pytest -q        # 185 unit tests across all modules
 ```
 
 The suite covers EAR geometry, PERCLOS/EMA math, latch semantics, timer freezing, calibration round-trips, session-log schema, eval metrics, settings validation, the env loader, the threaded pipeline (including MediaPipe 0.10.x vs 1.0+ landmark shapes), the side-by-side HUD canvas, Telegram caption/location dispatch, Supabase write-queue spooling, JSONL→Supabase sync, the API/auth/pairing handlers, and UDP discovery.
@@ -548,10 +567,10 @@ The suite covers EAR geometry, PERCLOS/EMA math, latch semantics, timer freezing
 
 ## 📊 Model Evaluation
 
-`evaluation/` contains the Roboflow-exported YOLO dataset, a `plot_metrics.py` script that re-renders validation charts with clean class names, and the resulting figures (confusion matrices, PR/F1/P/R confidence curves) under `evaluation/charts/`:
+The trained model weights (`best.pt`) and MediaPipe landmark model (`face_landmarker.task`) are included directly in the repository root. To evaluate alert precision/recall against labeled sample recordings, use the replay evaluation harness:
 
 ```bash
-python evaluation/plot_metrics.py --model best.pt --data evaluation/dataset/data.yaml
+python scripts/replay_eval.py --source testdata/sample.mp4 --labels testdata/labels.jsonl
 ```
 
 ---

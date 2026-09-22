@@ -210,12 +210,14 @@ def main():
     profile = CalibrationProfile.load(ProfilePath)
     if profile is None:
         profile = CalibrationProfile()
-        _needs_calibration = True
-        print("[warn] No calibration profile; using neutral defaults. "
-              "Calibration will run when a session starts.")
+        if not args.skip_calibration:
+            _needs_calibration = True
+            print("[warn] No calibration profile; using neutral defaults. "
+                  "Calibration will run when a session starts.")
+        else:
+            print("[info] --skip-calibration: using neutral defaults without calibration.")
     elif args.calibrate:
         _needs_calibration = True
-
     # ── State (unchanged logic from the original loop) ────────────
     LastTime = time.monotonic()
     Tick = 0
@@ -308,6 +310,8 @@ def main():
     calibration_command_pending = False
     calibration_lock = threading.Lock()
     api_commands = queue.Queue()
+    if not args.api:
+        api_commands.put(("start_trip", {}))
     monitoring_store = MonitoringStore()
 
     def handle_api_command(command, payload):
@@ -629,8 +633,10 @@ def main():
                 main._infer_version = -1  # type: ignore[attr-defined]
             result, main._infer_version = inference.wait_for_result(main._infer_version, timeout=0.5)  # type: ignore[attr-defined]
             if result is None:
+                if camera is not None and getattr(camera, "is_eof", False):
+                    print("[session] video source reached end of file")
+                    break
                 continue
-
             Now = time.monotonic()
             # Cap the step so a stall (e.g. idle before a session's first
             # frame) can never count as sustained condition time.

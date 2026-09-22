@@ -67,7 +67,9 @@ class CameraThread(threading.Thread):
         self._height = height
         self._latest = LatestValue()
         self._stop = threading.Event()
-        self._flip = flip
+        self._is_video = isinstance(source, str) and not source.isdigit()
+        self._eof = False
+        self._flip = flip if not self._is_video else False
         self._cap = cv2.VideoCapture(source)
         ok_w = self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         ok_h = self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
@@ -81,6 +83,9 @@ class CameraThread(threading.Thread):
         while not self._stop.is_set():
             ok, frame = self._cap.read()
             if not ok:
+                if self._is_video:
+                    self._eof = True
+                    break
                 failures += 1
                 if failures >= 30:
                     if failures == 30:
@@ -103,7 +108,8 @@ class CameraThread(threading.Thread):
 
     def stop(self) -> None:
         self._stop.set()
-        self.join(timeout=2.0)
+        if self.is_alive():
+            self.join(timeout=2.0)
         self._cap.release()
 
     def latest_frame(self):
@@ -111,6 +117,9 @@ class CameraThread(threading.Thread):
 
     def wait_for_frame(self, last_version: int, timeout: float | None = 0.5):
         return self._latest.wait_for_new(last_version, timeout=timeout)
+    @property
+    def is_eof(self) -> bool:
+        return self._eof
 
 
 class InferenceThread(threading.Thread):

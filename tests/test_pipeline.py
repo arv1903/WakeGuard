@@ -175,3 +175,19 @@ def test_pose_rgb_buffer_reallocates_for_new_resolution():
     inf._infer(np.zeros((40, 50, 3), dtype=np.uint8))
     assert inf._rgb_buffer.shape == (40, 50, 3)
 
+
+def test_camera_thread_video_source_flags(monkeypatch):
+    from yolo.pipeline import CameraThread
+    # Source as video file path
+    monkeypatch.setattr("cv2.VideoCapture", lambda src: type("FakeCap", (), {
+        "set": lambda self, prop, val: True,
+        "read": lambda self: (False, None),
+        "release": lambda self: None,
+    })())
+    cam = CameraThread("sample.mp4")
+    assert cam._is_video is True
+    assert cam.is_eof is False
+    # Run loop once where read() returns False
+    cam.run()
+    assert cam.is_eof is True
+    cam.stop()
