@@ -36,7 +36,7 @@ Real-time driver monitoring system that fuses a **YOLO eye-state classifier** wi
 | Channel | Trigger predicate | Persistence (τ) | Overlay |
 |---|---|---|---|
 | **Microsleep** | Continuous closure $\Delta t_c \ge \tau_{\mu s}$ | 1.5 s | `MICROSLEEP - EYES CLOSED! WAKE UP!` |
-| **Combined / Head-nod** | $\theta_p - \theta_{p,0} < -\Theta_p$ ∧ $c > \Theta_{y,weak}$ ∨ sustained head-down | 1.5 s / 2.0 s | `HEAD NODDING - DROWSY!` |
+| **Combined / Head-nod** | $\theta_p - \theta_{p,0} < -\Theta_p$ ∧ $c > \Theta_{y,\text{weak}}$ ∨ sustained head-down | 1.5 s / 2.0 s | `HEAD NODDING - DROWSY!` |
 | **PERCLOS / Fatigue** | $P(t) > \Theta_p$ sustained | 5.0 s | `FATIGUE DETECTED - SUSTAINED EYE CLOSURE!` |
 | **Face lost** | Face absent; prior state drowsy / clean | 1.5 s / 3.0 s | `FACE LOST — POSSIBLE MICROSLEEP!` |
 | **Distracted** | $\lvert \theta_y - \theta_{y,0} \rvert > \Theta_y$ | 1.5 s | `DISTRACTED - WATCH ROAD!` |
@@ -473,52 +473,74 @@ python main.py --config settings.json
 
 ### Head-Pose Estimation (Perspective-*n*-Point)
 
-MediaPipe yields 468 normalized landmarks $\{\ell_i\}_{i=1}^{468}$; six of them — nose tip (1), chin (152), eye corners (33, 263), mouth corners (61, 291) — form 2D image points $\mathbf{p}_i = (\ell_{i,x} \cdot w,\ \ell_{i,y} \cdot h)$. With the intrinsic matrix
+MediaPipe extracts 468 normalized facial landmarks. Six key correspondences — nose tip (1), chin (152), eye corners (33, 263), mouth corners (61, 291) — form 2D image points:
 
-$$\mathbf{K} = \begin{bmatrix} f & 0 & c_x \\ 0 & f & c_y \\ 0 & 0 & 1 \end{bmatrix}, \qquad f = 1.05\,w,\quad (c_x, c_y) = (w/2,\ h/2),$$
+$$
+\mathbf{p}_i = (\ell_{i,x} \cdot w,\; \ell_{i,y} \cdot h)
+$$
 
-and a generic 3D face model $\{\mathbf{P}_i\}$, OpenCV's `solvePnP` (EPnP) recovers the rigid transform $[\mathbf{R} \mid \mathbf{t}]$ by minimising the reprojection residual
+With the intrinsic camera matrix:
 
-$$\min_{\mathbf{R},\mathbf{t}} \sum_i \left\| \mathbf{p}_i - \pi\big(\mathbf{K}, [\mathbf{R} \mid \mathbf{t}], \mathbf{P}_i\big) \right\|^2,$$
+$$
+\mathbf{K} = \begin{bmatrix} f & 0 & c_x \\ 0 & f & c_y \\ 0 & 0 & 1 \end{bmatrix}, \qquad f = 1.05\,w,\quad (c_x, c_y) = (w/2,\; h/2)
+$$
 
-where $\pi$ is the perspective projection. $\mathbf{R}$ is extracted via Rodrigues and decomposed into **pitch** $\theta_p$, **yaw** $\theta_y$, **roll** $\theta_r$ through `RQDecomp3x3`. Sign conventions: $\theta_p > 0$ = looking up, $\theta_p < 0$ = down (drowsiness); $|\theta_y| > 0$ = looking away (distraction).
+and a generic 3D face model $\mathbf{P}_i$, OpenCV's `solvePnP` (EPnP) recovers the rigid transform $[\mathbf{R} \mid \mathbf{t}]$ by minimising the reprojection residual:
 
-Because seating geometry varies per driver, calibration records the neutral pose as the arithmetic mean over $N$ valid samples
+$$
+\min_{\mathbf{R},\mathbf{t}} \sum_i \left\| \mathbf{p}_i - \pi\big(\mathbf{K}, [\mathbf{R} \mid \mathbf{t}], \mathbf{P}_i\big) \right\|^2
+$$
 
-$$\theta_{0} = \frac{1}{N}\sum_{i=1}^{N}\theta^{(i)},$$
+where $\pi$ is the perspective projection. $\mathbf{R}$ is extracted via Rodrigues and decomposed into **pitch** $\theta_p$, **yaw** $\theta_y$, and **roll** $\theta_r$ Euler angles through `RQDecomp3x3`. Sign conventions: $\theta_p > 0$ = looking up, $\theta_p < 0$ = looking down (drowsiness); $|\theta_y| > 0$ = looking away (distraction).
 
-and all detection uses the **relative** deviation $\Delta\theta = \theta - \theta_0$. Pose estimates are exponentially smoothed with factor $\alpha_P = 0.35$:
+Because seating geometry varies per driver, calibration records the neutral pose as the arithmetic mean over $N$ valid samples:
 
-$$\bar\theta_t = \alpha_P\,\theta_t + (1-\alpha_P)\,\bar\theta_{t-1}.$$
+$$
+\theta_{0} = \frac{1}{N}\sum_{i=1}^{N}\theta^{(i)}
+$$
+
+and all detection uses the relative deviation $\Delta\theta = \theta - \theta_0$. Pose estimates are exponentially smoothed with factor $\alpha_P = 0.35$:
+
+$$
+\bar\theta_t = \alpha_P\,\theta_t + (1-\alpha_P)\,\bar\theta_{t-1}
+$$
 
 ### Eye Aspect Ratio (EAR)
 
-For each eye, the six periocular landmarks $\{p_1 \dots p_6\}$ (left: indices 33,160,158,133,153,144; right: 362,385,387,263,373,380) define
+For each eye, the six periocular landmarks (left: indices 33, 160, 158, 133, 153, 144; right: 362, 385, 387, 263, 373, 380) define:
 
-$$\text{EAR}_e = \frac{\lVert p_2 - p_6 \rVert + \lVert p_3 - p_5 \rVert}{2\,\lVert p_1 - p_4 \rVert + \varepsilon},$$
+$$
+\text{EAR}_e = \frac{\lVert p_2 - p_6 \rVert + \lVert p_3 - p_5 \rVert}{2\,\lVert p_1 - p_4 \rVert + \varepsilon}
+$$
 
-with the Euclidean norm $\lVert \cdot \rVert$ and $\varepsilon = 10^{-6}$ guarding against division by zero. The reported value is the mean over both eyes: $\text{EAR} = \tfrac{1}{2}(\text{EAR}_L + \text{EAR}_R)$. The scalar is robust to subject distance because both numerator and denominator scale linearly with it.
+with the Euclidean norm $\lVert \cdot \rVert$ and $\varepsilon = 10^{-6}$ guarding against division by zero. The reported value is the mean over both eyes: $\text{EAR} = \frac{1}{2}(\text{EAR}_L + \text{EAR}_R)$. The scalar is robust to subject distance because both numerator and denominator scale linearly with it.
 
 **Closure / blink / microsleep classification** — let $\Delta t_c$ be the duration of a continuous closure episode $(\text{EAR} < \theta_E = 0.20)$:
 
 - **Closure predicate**: $c_t = \mathbb{1}[\text{EAR}_t < \theta_E]$
-- **Blink**: $\tau_{blink} \le \Delta t_c < \tau_{\mu s}$ ($0.10 \le \Delta t_c < 1.5$ s)
-- **Microsleep**: $\Delta t_c \ge \tau_{\mu s} = 1.5$ s (a microsleep is *not* also counted as a blink)
+- **Blink**: $\tau_{\text{blink}} \le \Delta t_c < \tau_{\mu s}$ ($0.10 \le \Delta t_c < 1.5$ s)
+- **Microsleep**: $\Delta t_c \ge \tau_{\mu s} = 1.5$ s (a microsleep is not also counted as a blink)
 - **Blink rate**: $r(t) = \lvert \{ t_i : t - t_i < 60 \text{ s} \} \rvert$ — falling below `BlinkRateAlertPerMin` (8/min) sustained for `BlinkRateAlertTime` (10 s) raises its own alert
 
 ### Drowsiness EMA & PERCLOS
 
 The YOLO drowsy confidence $c_t$ is low-pass filtered with an exponential moving average ($\alpha_E = 0.9$):
 
-$$E_t = \alpha_E\,E_{t-1} + (1-\alpha_E)\,c_t.$$
+$$
+E_t = \alpha_E\,E_{t-1} + (1-\alpha_E)\,c_t
+$$
 
 Fused **eyes-closed** evidence combines the EMA with EAR:
 
-$$\text{closed}_t \iff E_t > \theta_{Y} \;(0.3) \;\lor\; \text{EAR}_t < \theta_E.$$
+$$
+\text{closed}_t \iff E_t > \theta_{Y} \;(0.3) \;\lor\; \text{EAR}_t < \theta_E
+$$
 
 **PERCLOS** (percentage of eyelid closure) is the fraction of closed samples in a rolling window of $N = \lfloor W \cdot f_s \rfloor = 1800$ samples ($W = 60$ s at $f_s = 30$ Hz):
 
-$$P(t) = \frac{1}{N}\sum_{i=t-N+1}^{t}\mathbb{1}[\text{closed}_i].$$
+$$
+P(t) = \frac{1}{N}\sum_{i=t-N+1}^{t}\mathbb{1}[\text{closed}_i]
+$$
 
 A **fatigue alert** fires when $P(t) > \Theta_P = 0.5$ is sustained for $\tau_P = 5$ s.
 
@@ -526,13 +548,17 @@ A **fatigue alert** fires when $P(t) > \Theta_P = 0.5$ is sustained for $\tau_P 
 
 A 0–100 attention score starts at 100 and subtracts three penalties (weights $w_y = 30$, $w_p = 40$, $w_e = 50$):
 
-$$A = \mathrm{clamp}\!\left(\;100 - w_y\min\!\Big(1,\tfrac{\lvert \theta_y \rvert}{45°}\Big) - w_p\min\!\Big(1,\tfrac{\lvert \min(\theta_p, 0) \rvert}{30°}\Big) - w_e\, c,\; 0,\; 100 \right),$$
+$$
+A = \mathrm{clamp}\!\left(\;100 - w_y\min\!\Big(1,\tfrac{\lvert \theta_y \rvert}{45^\circ}\Big) - w_p\min\!\Big(1,\tfrac{\lvert \min(\theta_p, 0) \rvert}{30^\circ}\Big) - w_e\, c,\; 0,\; 100 \right)
+$$
 
-then EMA-smoothed with $\alpha_A = 0.85$. Zones: **Focused** $\bar A \ge 80$, **Unfocused** $50 \le \bar A < 80$, **Low** $\bar A < 50$.
+then EMA-smoothed with $\alpha_A = 0.85$. Zones: **Focused** ($\bar A \ge 80$), **Unfocused** ($50 \le \bar A < 80$), **Low** ($\bar A < 50$).
 
 The post-trip **safety score** (`yolo/score.py`) is deliberately simple:
 
-$$S = \mathrm{clamp}\big(\bar A - n_{\text{alerts}} \cdot \text{SafetyScorePenaltyPerAlert},\ 0,\ 100\big),$$
+$$
+S = \mathrm{clamp}\big(\bar A - n_{\text{alerts}} \cdot \text{SafetyScorePenaltyPerAlert},\ 0,\ 100\big)
+$$
 
 with penalty 3.0 points per alert — tunable via settings JSON, shared as a single source of truth by the Python summary and the Flutter dialog.
 
@@ -540,20 +566,23 @@ with penalty 3.0 points per alert — tunable via settings JSON, shared as a sin
 
 Each alert channel uses an accumulator with a configurable persistence requirement $\tau$:
 
-$$A_t = \begin{cases} 0 & \text{condition false} \\ A_{t-1} + \Delta t & \text{condition true, not frozen} \\ A_{t-1} & \text{frozen (face lost)} \end{cases}, \qquad \text{fire} \iff A_t \ge \tau.$$
+$$
+A_t = \begin{cases} 0 & \text{condition false} \\ A_{t-1} + \Delta t & \text{condition true, not frozen} \\ A_{t-1} & \text{frozen (face lost)} \end{cases}, \qquad \text{fire} \iff A_t \ge \tau
+$$
 
-Freezing preserves timer progress through face-loss episodes without premature firing. A separate **latch** implements hysteresis for the PERCLOS and microsleep channels: once fired, the alert stays active until the condition has been clean for $\tau_{clear} = 2.0$ s, eliminating on/off flicker.
+Freezing preserves timer progress through face-loss episodes without premature firing. A separate **latch** implements hysteresis for the PERCLOS and microsleep channels: once fired, the alert stays active until the condition has been clean for $\tau_{\text{clear}} = 2.0$ s, eliminating on/off flicker.
 
 ### Face-Lost State Machine
 
-On the transition *face present → absent*, the system snapshots the last known state; the alert fires when the absence time satisfies $t_{lost} \ge \tau_{risky} = 1.5$ s (prior state drowsy/head-down) or $t_{lost} \ge \tau_{clean} = 3.0$ s (prior state clean). The machine is frozen during the startup countdown so warm-up frames can never seed it.
+On the transition *face present → absent*, the system snapshots the last known state; the alert fires when the absence time satisfies $t_{\text{lost}} \ge \tau_{\text{risky}} = 1.5$ s (prior state drowsy/head-down) or $t_{\text{lost}} \ge \tau_{\text{clean}} = 3.0$ s (prior state clean). The machine is frozen during the startup countdown so warm-up frames can never seed it.
 
 ### Session Metrics & Evaluation
 
-From the JSONL telemetry, the trip summary computes the arithmetic mean and extrema of the attention and PERCLOS series, e.g. $\bar{x} = \frac{1}{n}\sum_{i=1}^{n} x_i$. The replay harness (`scripts/replay_eval.py`) evaluates fired alerts against labeled drowsy periods episode-wise with tolerance $\epsilon_t = 5$ s and reports
+From the JSONL telemetry, the trip summary computes the arithmetic mean and extrema of the attention and PERCLOS series, e.g. $\bar{x} = \frac{1}{n}\sum_{i=1}^{n} x_i$. The replay harness (`scripts/replay_eval.py`) evaluates fired alerts against labeled drowsy periods episode-wise with tolerance $\epsilon_t = 5$ s and reports:
 
-$$P = \frac{TP}{TP + FP}, \qquad R = \frac{TP}{TP + FN}, \qquad F_1 = \frac{2PR}{P + R}.$$
-
+$$
+P = \frac{TP}{TP + FP}, \qquad R = \frac{TP}{TP + FN}, \qquad F_1 = \frac{2PR}{P + R}
+$$
 ---
 
 ## 🧪 Testing
