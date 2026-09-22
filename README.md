@@ -88,7 +88,6 @@ Inter-thread handoff uses a **drop-old `LatestValue` slot** (see `yolo/latest.py
 │   ├── replay_eval.py       # Replay a session log against label periods
 │   ├── render_test_frame.py # Render the HUD onto a synthetic frame (QA)
 │   └── migrate_to_supabase.py # Import existing JSONL logs into Supabase
-├── evaluation/              # YOLO dataset, validation charts, plot_metrics.py
 ├── supabase/migrations/     # SQL schema migrations (apply in order)
 ├── flutter_app/             # Flutter companion dashboard (desktop + mobile)
 ├── tests/                   # pytest suite (unit tests for every module)
