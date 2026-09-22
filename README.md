@@ -482,7 +482,11 @@ $$
 With the intrinsic camera matrix:
 
 $$
-\mathbf{K} = \begin{bmatrix} f & 0 & c_x \\ 0 & f & c_y \\ 0 & 0 & 1 \end{bmatrix}, \qquad f = 1.05\,w,\quad (c_x, c_y) = (w/2,\; h/2)
+\mathbf{K} = \begin{bmatrix}
+f & 0 & c_x \\\\
+0 & f & c_y \\\\
+0 & 0 & 1
+\end{bmatrix}, \qquad f = 1.05\,w,\quad (c_x, c_y) = (w/2,\; h/2)
 $$
 
 and a generic 3D face model $\mathbf{P}_i$, OpenCV's `solvePnP` (EPnP) recovers the rigid transform $[\mathbf{R} \mid \mathbf{t}]$ by minimising the reprojection residual:
@@ -567,7 +571,11 @@ with penalty 3.0 points per alert — tunable via settings JSON, shared as a sin
 Each alert channel uses an accumulator with a configurable persistence requirement $\tau$:
 
 $$
-A_t = \begin{cases} 0 & \text{condition false} \\ A_{t-1} + \Delta t & \text{condition true, not frozen} \\ A_{t-1} & \text{frozen (face lost)} \end{cases}, \qquad \text{fire} \iff A_t \ge \tau
+A_t = \begin{cases}
+0 & \text{condition false} \\\\
+A_{t-1} + \Delta t & \text{condition true, not frozen} \\\\
+A_{t-1} & \text{frozen (face lost)}
+\end{cases}, \qquad \text{fire} \iff A_t \ge \tau
 $$
 
 Freezing preserves timer progress through face-loss episodes without premature firing. A separate **latch** implements hysteresis for the PERCLOS and microsleep channels: once fired, the alert stays active until the condition has been clean for $\tau_{\text{clear}} = 2.0$ s, eliminating on/off flicker.
