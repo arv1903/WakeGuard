@@ -169,8 +169,7 @@ class _AppShellState extends State<AppShell> {
   @override
   Widget build(BuildContext context) {
     final wide = MediaQuery.sizeOf(context).width >= AppBreakpoints.medium;
-    // Keep sidebar visible whenever wide (even idle) so Settings stays reachable.
-    // Previously hidden when idle, forcing reliance on header nav only.
+    // Keep sidebar visible on wide screens so navigation stays accessible
     final showSidebar = wide;
 
     return CallbackShortcuts(

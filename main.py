@@ -218,7 +218,7 @@ def main():
             print("[info] --skip-calibration: using neutral defaults without calibration.")
     elif args.calibrate:
         _needs_calibration = True
-    # ── State (unchanged logic from the original loop) ────────────
+    # ── State ───────────────────────────────────────────────────
     LastTime = time.monotonic()
     Tick = 0
     YoloDrowsyAcc = HeadDownAcc = HeadAwayAcc = CombinedAcc = 0.0
@@ -427,9 +427,7 @@ def main():
                                     _device_user_id = _claims.get("sub")
                             except Exception:
                                 pass
-                # If no cached JWT, the device must be registered manually
-                # via the API (user registers on desktop UI first time).
-                # For now, just print a reminder.
+                # Prompt registration if no cached JWT exists
                 if not _device_jwt:
                     print("[db] Supabase is active — register this device via /api/v1/auth/login "
                           "then POST /api/v1/device/register to enable mobile discovery.")
@@ -528,10 +526,7 @@ def main():
                                 valid_samples=0)
                             print("[session] started non-blocking neutral head pose calibration...")
                     else:
-                        # Start pressed while a session is already active (e.g.
-                        # after an app restart) — re-arm a fresh countdown and
-                        # wipe stale accumulators instead of silently ignoring it,
-                        # so a new session never inherits the old one's state.
+                        # Re-arm startup countdown if session is already active
                         print("[session] start requested while active — "
                               "re-arming startup countdown")
                     _start_pipeline()
@@ -582,9 +577,7 @@ def main():
                         calibration_command_pending = False
                     print(f"[api] started non-blocking calibration ({duration:.1f}s)")
                 elif command == "update_settings":
-                    # Validated settings update — any bad value raises ValueError
-                    # which api.py translates to 400 so the Flutter toggle gets
-                    # feedback instead of silently pretending to work.
+                    # Apply validated runtime settings
                     try:
                         payload = payload or {}
                         config_updates = {
@@ -627,8 +620,7 @@ def main():
                 print("[session] pipeline active")
                 _idle_logged = False
 
-            # Use Condition-based wait instead of spin-poll sleep(0.005)
-            # which woke 200×/s for nothing (~8% CPU waste).
+            # Wait for next inference result
             if not hasattr(main, "_infer_version"):
                 main._infer_version = -1  # type: ignore[attr-defined]
             result, main._infer_version = inference.wait_for_result(main._infer_version, timeout=0.5)  # type: ignore[attr-defined]
@@ -714,7 +706,7 @@ def main():
                 SmoothedYaw = alpha * hp["yaw"] + (1 - alpha) * SmoothedYaw
                 SmoothedRoll = alpha * hp["roll"] + (1 - alpha) * SmoothedRoll
 
-            # Draw YOLO boxes (same rendering as before).
+            # Draw YOLO detection boxes
             DrawYoloBoxes(annotated, result.boxes, box_scale)
 
             # ── Face-lost detection ────────────────────────────────
@@ -753,7 +745,7 @@ def main():
                 if FaceFound and not FaceLost:
                     last_seen = frame.copy()
 
-            # ── State evaluation (same logic as original) ─────────
+            # ── State evaluation ────────────────────────────────────────
             HeadDown = hp["valid"] and (SmoothedPitch - profile.neutral_pitch) < -HeadDownPitch
             LookingAway = hp["valid"] and abs(SmoothedYaw - profile.neutral_yaw) > HeadYawThreshold
             HeadTilt = hp["valid"] and abs(SmoothedRoll - profile.neutral_roll) > HeadRollThreshold
@@ -775,9 +767,7 @@ def main():
 
             # ── PERCLOS + EMA (fuses YOLO confidence and EAR) ──────
             ema_now = ema_drowsy.update(0.0 if countdown_active else result.max_drowsy)
-            # EAR is only trusted when a face pose is valid — prevents
-            # spurious eye-closed when half-occluded (ComputeEAR now returns
-            # None, but guard with pose_valid for defense in depth).
+            # EAR is evaluated only when head pose is valid
             eyes_closed = ((ema_now > EyesClosedYoloConf
                             or (hp["valid"] and result.ear is not None
                                 and result.ear < EarClosedThreshold))
@@ -833,7 +823,7 @@ def main():
             if not args.no_alarm:
                 UpdateAlarm(AlertMsg is not None)
 
-            # ── Attention (same as original) ──────────────────────
+            # ── Attention scoring ─────────────────────────────────────
             rel_pitch = SmoothedPitch - profile.neutral_pitch
             rel_yaw = SmoothedYaw - profile.neutral_yaw
             raw = ComputeAttentionScore(
@@ -886,15 +876,11 @@ def main():
                 calibration_valid_samples=calibration_status["valid_samples"],
             ))
             if monitoring_api is not None:
-                # Stream the already-annotated canvas (detection boxes + alert
-                # overlay) instead of the raw frame, so the desktop/mobile
-                # camera feed shows the same overlay the operator sees. This
-                # adds no inference work — only a few lines/labels before the
-                # JPEG encode that already happens every tick.
+                # Stream annotated canvas with detection and HUD overlays
                 monitoring_api.publish_frame(annotated)
 
             # ── Session logging (alert transitions + 1 Hz samples) ──
-            # Respect SessionLoggingEnabled — the Flutter toggle now actually works.
+            # Respect SessionLoggingEnabled setting
             do_log = trip_active and globals().get("SessionLoggingEnabled", True)
             if do_log and AlertMsg != prev_alert:
                 if AlertMsg:

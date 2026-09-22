@@ -188,7 +188,7 @@ class AppTextStyles {
       color: AppColors.textPrimary);
 }
 
-/// Single source of truth for responsive breakpoints (fixes 880 vs 1100 mismatch).
+/// Responsive layout breakpoints.
 class AppBreakpoints {
   AppBreakpoints._();
   static const double compact = 600;

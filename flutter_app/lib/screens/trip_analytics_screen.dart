@@ -37,7 +37,7 @@ class _TripAnalyticsScreenState extends State<TripAnalyticsScreen> {
     final snap = widget.client.snapshot;
     if (snap.sequence <= 0) return;
     final now = DateTime.now();
-    // Throttle telemetry to 1 Hz like SessionLogger (was every snapshot ~30fps → 12s fill + churn)
+    // Sample telemetry at 1 Hz
     final shouldSample = _lastSampleTime == null ||
         now.difference(_lastSampleTime!).inMilliseconds >= 1000;
 

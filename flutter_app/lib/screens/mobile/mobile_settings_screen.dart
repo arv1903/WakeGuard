@@ -115,7 +115,7 @@ class _MobileSettingsScreenState extends State<MobileSettingsScreen> {
     if (mounted) setState(() => _forgetting = false);
   }
 
-  // ── Real connection state (was hardcoded 'NODE ACTIVE // UPLINK SECURE')
+  // ── Connection state ─────────────────────────────────────────
 
   BackendConnectionState get _connectionState =>
       widget.connectionService.client.connectionState;
@@ -431,9 +431,7 @@ class _MobileSettingsScreenState extends State<MobileSettingsScreen> {
   }
 
   Widget _buildModulesCard() {
-    // The backend has no Telegram or session-logging endpoints, so those
-    // toggles are gone rather than faked. Alarm state comes from the live
-    // snapshot and maps to the real mute/unmute endpoints.
+    // Alarm state reflects live snapshot and triggers backend mute/unmute
     final alarmEnabled =
         !widget.connectionService.client.snapshot.alarmMuted;
     return Container(

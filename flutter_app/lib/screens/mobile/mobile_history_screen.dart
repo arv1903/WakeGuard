@@ -171,8 +171,7 @@ class _MobileHistoryScreenState extends State<MobileHistoryScreen> {
         color: Stitch.surfaceLow,
         borderRadius: BorderRadius.circular(12),
         child: InkWell(
-          // All trip data is shown inline; tapping opens nothing yet, so the
-          // card is honestly static until a detail view exists.
+          // Trip data is displayed inline
           onTap: null,
           borderRadius: BorderRadius.circular(12),
           child: Container(

@@ -68,9 +68,7 @@ class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
       vsync: this,
       duration: const Duration(seconds: 3),
     )..repeat();
-    // 127.0.0.1 is only meaningful when the app runs beside the backend
-    // (desktop). On a phone it means "dial yourself" — the exact mistake
-    // behind 'SocketConnection refused … errno 11' after scanning a QR.
+    // Default to loopback for desktop; leave empty on mobile to prompt discovery
     _backendUrlController.text =
         _isPhone ? '' : 'http://127.0.0.1:8765';
     _startAutoDiscovery();
@@ -111,8 +109,7 @@ class _ConnectionSetupScreenState extends State<ConnectionSetupScreen>
         ? backendUrl
         : 'http://$backendUrl';
 
-    // A phone can never reach a desktop via loopback — catch it here
-    // instead of letting the connection loop fail with a cryptic errno 11.
+    // Validate that mobile clients do not attempt connecting via loopback
     final parsedUrl = Uri.tryParse(normalisedUrl);
     final isLoopback = parsedUrl != null &&
         (parsedUrl.host == '127.0.0.1' || parsedUrl.host == 'localhost');

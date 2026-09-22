@@ -723,8 +723,7 @@ class _TripRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Now genuinely clickable — navigates to Trip Analytics, or shows detail
-    // if onTap provided. Previously was an unclickable InkWell with hover.
+    // Navigates to Trip Analytics or displays trip detail when selected
     final content = Padding(
       padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
       child: Row(children: [
@@ -831,8 +830,7 @@ class _GlobalCalibrationCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Bind bars to live snapshot instead of hardcoded theater values.
-    // Previously 0.75 High / 1.0 Active lied after threshold changes.
+    // Bind bars to live monitoring snapshot
     return ListenableBuilder(
       listenable: client,
       builder: (context, _) {

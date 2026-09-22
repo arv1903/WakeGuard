@@ -1,7 +1,3 @@
-# Freebuff desktop data
-.freebuff/
-.kilo/
-
 # Python
 __pycache__/
 *.py[cod]
@@ -25,19 +21,11 @@ htmlcov/
 .env.local
 .env.*.local
 
-# Temporary Telegram snapshot
+# Temporary runtime artifacts
 drowsy_alert.jpg
-
-# Rendered HUD preview (scripts/render_test_frame.py)
 hud_preview.png
 
-
-# Training, Evaluation & Review Scratch
-runs/
-_out_*.txt
-_review_*
-_ocr_libs/
-# IDE
+# IDE & Editor
 .vscode/
 .idea/
 *.swp
@@ -47,20 +35,12 @@ _ocr_libs/
 .DS_Store
 Thumbs.db
 
-# Model files (large binary — download separately or use Git LFS)
-# best.pt
-
-# Agent progress scratch (SDD ledger + task briefs)
-.superpowers/
-.docs/
-
 # Calibration profiles
 profiles/
 
 # Session logs and captures
 logs/
 captures/
-
 
 # Local databases & queues
 *.sqlite
@@ -69,11 +49,9 @@ captures/
 
 # Flutter / Dart
 .dart_tool/
-# Obsidian vault junction (notes -> Obsidian Vault/Freebuff)
-notes/
 
 # User settings (the .example variant is committed)
 settings.json
 
-# Generated test videos (hand-authored labels are still tracked)
+# Generated test videos
 testdata/*.mp4

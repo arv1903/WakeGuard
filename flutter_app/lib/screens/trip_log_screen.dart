@@ -54,8 +54,7 @@ class _TripLogScreenState extends State<TripLogScreen> {
             DateTime(_dateTo!.year, _dateTo!.month, _dateTo!.day, 23, 59, 59);
         if (dt.isAfter(endOfDay)) return false;
       }
-      // A missing score is unknown, not perfect: it fails any narrowed
-      // score filter instead of silently passing as an invented 100.
+      // Missing score only matches default unbounded range
       if (safetyScore == null) {
         if (_minSafety > 0 || _maxSafety < 100) return false;
       } else if (safetyScore < _minSafety || safetyScore > _maxSafety) {

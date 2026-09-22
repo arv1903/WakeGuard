@@ -218,10 +218,8 @@ def RenderHud(frame: np.ndarray, state: HudState) -> np.ndarray:
                   width=5)
 
     if config.NightMode:
-        # Dim only RGB channels, preserve alpha (previous Image.eval(v//2)
-        # halved alpha too, washing HUD into ghostly transparency).
+        # Dim RGB channels toward black by 50% while preserving alpha
         r, g, b, a = overlay.split()
-        # Blend overlay RGB toward black by 50% (night dimming)
         r = r.point(lambda v: v // 2)
         g = g.point(lambda v: v // 2)
         b = b.point(lambda v: v // 2)

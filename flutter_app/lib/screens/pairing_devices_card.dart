@@ -33,7 +33,7 @@ class _PairingDevicesCardState extends State<PairingDevicesCard> {
   void initState() {
     super.initState();
     _load();
-    // Keep the expiry countdowns honest without per-second churn.
+    // Refresh expiry countdowns periodically
     _refreshTimer = Timer.periodic(const Duration(minutes: 1), (_) => _load());
   }
 

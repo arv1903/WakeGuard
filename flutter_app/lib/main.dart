@@ -102,7 +102,7 @@ class _DriverMonitorAppState extends State<DriverMonitorApp> {
   }
 
   Future<void> _startBackend() async {
-    // Wire port from apiUrl so backend and client agree (fixes hardcoded 8765 mismatch)
+    // Derive port from apiUrl if specified
     int? port;
     try {
       final uri = Uri.tryParse(widget.apiUrl);

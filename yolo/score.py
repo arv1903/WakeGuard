@@ -1,11 +1,4 @@
-"""Single source of truth for safety scoring.
-
-Previously duplicated as:
-  yolo/summary.py:90  round(max(0, min(100, avg_att - len(alerts)*3)))
-  flutter_app/lib/screens/post_trip_summary_dialog.dart:23  avgAttention*1.0 - alertCount*3
-
-Magic *3 now documented, tunable via config.
-"""
+"""Unified safety scoring calculation across backend and client interfaces."""
 
 from .config import SafetyScorePenaltyPerAlert
 

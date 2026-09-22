@@ -94,9 +94,7 @@ void main() {
   test('revokePairing returns false when nothing matched (404)', () async {
     final client = clientWithToken();
 
-    // The stub 200s everything except /pairings/revoke below — simulate 404
-    // by replacing the handler output for this test.
-    // Simplest honest path: point the client at a server that 404s.
+    // Point the client at a server returning 404
     final failing = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     failing.listen((request) async {
       request.response.statusCode = 404;

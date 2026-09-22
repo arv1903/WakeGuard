@@ -173,7 +173,7 @@ HeadPoseEveryN = 2                # run MediaPipe every N frames
 # ── Performance / Pipeline ─────────────────────────
 CaptureWidth = 640            # camera capture width (display upscales)
 CaptureHeight = 480           # camera capture height
-YoloEveryN = 2                # run YOLO every N frames (2 = ~15 fps on CPU, was 1 = 80-120ms starve)
+YoloEveryN = 2                # run YOLO every N frames
 DisplayFps = 30               # display loop target FPS (GUI mode)
 
 # ── EAR / Blink / Microsleep ───────────────────────

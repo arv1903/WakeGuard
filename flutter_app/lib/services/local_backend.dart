@@ -25,7 +25,7 @@ class LocalBackendProcess {
 
   Future<bool> start({int? port, String host = '127.0.0.1'}) async {
     if (!supported || isRunning) return isRunning;
-    // Derive port from API_URL env if not explicitly passed (fixes hardcoded 8765 vs baseUrl mismatch)
+    // Derive port from API_URL if not explicitly passed
     int effectivePort = port ?? 8765;
     if (port == null) {
       try {
