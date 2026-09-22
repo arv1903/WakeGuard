@@ -473,23 +473,33 @@ python main.py --config settings.json
 
 ### Head-Pose Estimation (Perspective-*n*-Point)
 
-MediaPipe extracts 468 normalized facial landmarks. Six key correspondences — nose tip (1), chin (152), eye corners (33, 263), mouth corners (61, 291) — form 2D image points:
+MediaPipe Face Mesh extracts 468 normalized 3D facial landmarks. To compute head orientation without a complex 3D mesh, the algorithm matches **six rigid 2D facial feature points** to a generic 3D human head model (`solvePnP`):
 
-$$
-\mathbf{p}_i = (\ell_{i,x} \cdot w,\; \ell_{i,y} \cdot h)
-$$
+| Facial Feature | MediaPipe Landmark ID | 2D Pixel Coordinate ($\mathbf{p}_i$) |
+|---|---|---|
+| **Nose tip** | Index 1 | $(w \cdot \ell_{1,x}, h \cdot \ell_{1,y})$ |
+| **Chin** | Index 152 | $(w \cdot \ell_{152,x}, h \cdot \ell_{152,y})$ |
+| **Left eye outer corner** | Index 33 | $(w \cdot \ell_{33,x}, h \cdot \ell_{33,y})$ |
+| **Right eye outer corner** | Index 263 | $(w \cdot \ell_{263,x}, h \cdot \ell_{263,y})$ |
+| **Left mouth corner** | Index 61 | $(w \cdot \ell_{61,x}, h \cdot \ell_{61,y})$ |
+| **Right mouth corner** | Index 291 | $(w \cdot \ell_{291,x}, h \cdot \ell_{291,y})$ |
 
-With the intrinsic camera matrix:
+The camera intrinsic matrix $\mathbf{K}$ models a standard pinhole camera:
 
 $$
 \mathbf{K} = \begin{bmatrix}
 f & 0 & c_x \\\\
 0 & f & c_y \\\\
 0 & 0 & 1
-\end{bmatrix}, \qquad f = 1.05\,w,\quad (c_x, c_y) = (w/2,\; h/2)
+\end{bmatrix}
 $$
 
-and a generic 3D face model $\mathbf{P}_i$, OpenCV's `solvePnP` (EPnP) recovers the rigid transform $[\mathbf{R} \mid \mathbf{t}]$ by minimising the reprojection residual:
+Where:
+- **$f = 1.05 \times w$**: Approximated focal length in pixels (standard ~60° diagonal webcam field of view).
+- **$(c_x, c_y) = (w / 2, h / 2)$**: Principal point (optical center at the image midpoint).
+- **$w, h$**: Frame width and height in pixels (e.g. $640 \times 480$).
+
+With a generic 3D face model $\mathbf{P}_i$, OpenCV's `solvePnP` (EPnP) recovers the rigid transform $[\mathbf{R} \mid \mathbf{t}]$ by minimising the reprojection residual:
 
 $$
 \min_{\mathbf{R},\mathbf{t}} \sum_i \left\| \mathbf{p}_i - \pi\big(\mathbf{K}, [\mathbf{R} \mid \mathbf{t}], \mathbf{P}_i\big) \right\|^2
@@ -537,7 +547,7 @@ $$
 Fused **eyes-closed** evidence combines the EMA with EAR:
 
 $$
-\text{closed}_t \iff E_t > \theta_{Y} \;(0.3) \;\lor\; \text{EAR}_t < \theta_E
+\text{closed}_t \iff E_t > 0.3 \quad\lor\quad \text{EAR}_t < \theta_E
 $$
 
 **PERCLOS** (percentage of eyelid closure) is the fraction of closed samples in a rolling window of $N = \lfloor W \cdot f_s \rfloor = 1800$ samples ($W = 60$ s at $f_s = 30$ Hz):
@@ -553,7 +563,7 @@ A **fatigue alert** fires when $P(t) > \Theta_P = 0.5$ is sustained for $\tau_P 
 A 0–100 attention score starts at 100 and subtracts three penalties (weights $w_y = 30$, $w_p = 40$, $w_e = 50$):
 
 $$
-A = \mathrm{clamp}\!\left(\;100 - w_y\min\!\Big(1,\tfrac{\lvert \theta_y \rvert}{45^\circ}\Big) - w_p\min\!\Big(1,\tfrac{\lvert \min(\theta_p, 0) \rvert}{30^\circ}\Big) - w_e\, c,\; 0,\; 100 \right)
+A = \mathrm{clamp}\left( 100 - w_y \min\left(1, \frac{|\theta_y|}{45^\circ}\right) - w_p \min\left(1, \frac{|\min(\theta_p, 0)|}{30^\circ}\right) - w_e \cdot c, \quad 0, \quad 100 \right)
 $$
 
 then EMA-smoothed with $\alpha_A = 0.85$. Zones: **Focused** ($\bar A \ge 80$), **Unfocused** ($50 \le \bar A < 80$), **Low** ($\bar A < 50$).
@@ -561,7 +571,7 @@ then EMA-smoothed with $\alpha_A = 0.85$. Zones: **Focused** ($\bar A \ge 80$), 
 The post-trip **safety score** (`yolo/score.py`) is deliberately simple:
 
 $$
-S = \mathrm{clamp}\big(\bar A - n_{\text{alerts}} \cdot \text{SafetyScorePenaltyPerAlert},\ 0,\ 100\big)
+S = \mathrm{clamp}\big(\bar A - n_{\text{alerts}} \cdot \text{SafetyScorePenaltyPerAlert}, 0, 100\big)
 $$
 
 with penalty 3.0 points per alert — tunable via settings JSON, shared as a single source of truth by the Python summary and the Flutter dialog.
@@ -591,6 +601,7 @@ From the JSONL telemetry, the trip summary computes the arithmetic mean and extr
 $$
 P = \frac{TP}{TP + FP}, \qquad R = \frac{TP}{TP + FN}, \qquad F_1 = \frac{2PR}{P + R}
 $$
+
 ---
 
 ## 🧪 Testing
