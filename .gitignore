@@ -5,14 +5,25 @@
 # Python
 __pycache__/
 *.py[cod]
+*$py.class
 *.egg-info/
 dist/
 build/
 venv/
 .venv/
+*.log
+
+# Testing & Tooling Caches
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/
 
 # Environment secrets
 .env
+.env.local
+.env.*.local
 
 # Temporary Telegram snapshot
 drowsy_alert.jpg
@@ -20,6 +31,12 @@ drowsy_alert.jpg
 # Rendered HUD preview (scripts/render_test_frame.py)
 hud_preview.png
 
+
+# Training, Evaluation & Review Scratch
+runs/
+_out_*.txt
+_review_*
+_ocr_libs/
 # IDE
 .vscode/
 .idea/
@@ -44,6 +61,14 @@ profiles/
 logs/
 captures/
 
+
+# Local databases & queues
+*.sqlite
+*.sqlite3
+*.db
+
+# Flutter / Dart
+.dart_tool/
 # Obsidian vault junction (notes -> Obsidian Vault/Freebuff)
 notes/
 
